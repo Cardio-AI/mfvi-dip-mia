@@ -11,6 +11,8 @@ import time
 from typing import Dict, List, Tuple
 from pathlib import Path
 import itertools
+
+import cv2
 from PIL import Image
 
 # third party
@@ -33,7 +35,9 @@ import gpytorch
 
 # own
 from models import get_net
+from models.downsampler import Downsampler
 from utils.denoising_utils import get_noisy_image_gaussian
+from utils.sr_utils import load_LR_HR_imgs_sr
 from utils.bayesian_utils import gaussian_nll
 from utils.common_utils import crop_image, get_image, pil_to_np, np_to_pil, plot_image_grid, \
     get_noise, get_params, np_to_torch, peak_signal_noise_ratio, structural_similarity
@@ -42,134 +46,220 @@ from BayTorch.freq_to_bayes import MeanFieldVI
 torch.manual_seed(0)
 np.random.seed(0)
 
+# def run_den(
+#         img: int = 0,
+#         num_iter: int = 5000,
+#         lr: float = 3e-4,
+#         beta: float = 4e-6,  # lambda in the paper
+#         tau: float = 0.01,
+#         p_sigma: float = 0.1,
+#         input_depth: int = 16,
+#         device: torch.device = torch.device('cpu'),
+#         index: int = 0,
+#         seed: int = 42,
+#         show_every: int = 100,
+#         plot: bool = True,
+#         save: bool = True,
+#         save_path: str = '../logs'
+# ) -> float:
+#     imsize = (256, 256)
+#
+#     # if img == 0:
+#     #     fname = 'data/NORMAL-4951060-8.png'
+#     #     imsize = (256, 256)
+#     if img == 0:
+#         fname = 'data/denoising/BACTERIA-1351146-0006.png'
+#         imsize = (256, 256)
+#     # elif img == 2:
+#     #     fname = 'data/081_HC.png'
+#     #     imsize = (256, 256)
+#     # elif img == 3:
+#     #     fname = 'data/CNV-9997680-30.png'
+#     #     imsize = (256, 256)
+#     elif img == 1:
+#         fname = 'data/denoising/VIRUS-9815549-0001.png'
+#         imsize = (256, 256)
+#     else:
+#         assert False
+#
+#     # if fname == 'data/NORMAL-4951060-8.jpeg':
+#     #
+#     #     # Add Gaussian noise to simulate speckle
+#     #     img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+#     #     img_np = pil_to_np(img_pil)
+#     #     p_sigma = 0.1
+#     #     img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
+#
+#     if fname in ['data/denoising/BACTERIA-1351146-0006.png', 'data/denoising/VIRUS-9815549-0001.png']:
+#
+#         # Add Poisson noise to simulate low dose X-ray
+#         img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+#         img_np = pil_to_np(img_pil)
+#         # img_noisy_pil, img_noisy_np = get_noisy_image_poisson(img_np, p_lambda)
+#         # for lam > 20, poisson can be approximated with Gaussian
+#         # p_sigma = 0.1
+#         img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
+#
+#     # elif fname == 'data/081_HC.png':
+#     #
+#     #     # Add Gaussian noise to simulate speckle
+#     #     img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+#     #     img_np = pil_to_np(img_pil)
+#     #     p_sigma = 0.1
+#     #     img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
+#     #
+#     # elif fname == 'data/CNV-9997680-30.png':
+#     #
+#     #     # Add Gaussian noise to simulate speckle
+#     #     img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+#     #     img_np = pil_to_np(img_pil)
+#     #     p_sigma = 0.1
+#     #     img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
+#
+#     else:
+#         assert False
+#
+#     NET_TYPE = 'skip'
+#
+#     skip_n33d = [16, 32, 64, 128, 128]
+#     skip_n33u = [16, 32, 64, 128, 128]
+#     skip_n11 = 4
+#     num_scales = 5
+#     upsample_mode = 'bilinear'
+#     pad = 'reflection'
+#
+#     net = get_net(input_depth, NET_TYPE, pad,
+#                   skip_n33d=skip_n33d,
+#                   skip_n33u=skip_n33u,
+#                   skip_n11=skip_n11,
+#                   num_scales=num_scales,
+#                   n_channels=2,
+#                   upsample_mode=upsample_mode).to(device)
+#
+#     psnr = run(
+#         net=net,
+#         img_np=img_np,
+#         img_pil=img_pil,
+#         img_corrupted_np=img_noisy_np,
+#         imsize=imsize,
+#         problem="noisy",
+#         num_iter=num_iter,
+#         lr=lr,
+#         beta=beta,
+#         tau=tau,
+#         input_depth=input_depth,
+#         device=device,
+#         index=index,
+#         seed=seed,
+#         show_every=show_every,
+#         plot=plot,
+#         save=save,
+#         save_path=save_path
+#     )
+#
+#     return psnr
+#
+#
+# def run_sr(
+#         img: int = 0,
+#         num_iter: int = 5000,
+#         lr: float = 3e-4,
+#         beta: float = 4e-6,  # lambda in the paper
+#         tau: float = 0.01,
+#         factor: int = 4,
+#         input_depth: int = 16,
+#         device: torch.device = torch.device('cpu'),
+#         index: int = 0,
+#         seed: int = 42,
+#         show_every: int = 100,
+#         plot: bool = True,
+#         save: bool = True,
+#         save_path: str = '../logs'
+# ) -> float:
+#     # imsize = (256, 256)
+#
+#     if img == 0:
+#         fname = 'data/super-resolution/img_139_res384.png'
+#         # imsize = (256, 256)
+#     elif img == 1:
+#         fname = 'data/super-resolution/img_203_res.png'
+#         # imsize = (256, 256)
+#     else:
+#         assert False
+#
+#     if fname in ['data/super-resolution/img_139_res384.png', 'data/super-resolution/img_203_res.png']:
+#
+#         imgs = load_LR_HR_imgs_sr(fname, -1, factor, enforse_div32="CROP")
+#
+#         img_hr_np = imgs["HR_np"]
+#         img_lr_np = imgs["LR_np"]
+#         img_hr_pil = imgs["HR_pil"]
+#
+#         imsize = img_hr_np.shape
+#
+#     else:
+#         assert False
+#
+#     NET_TYPE = 'skip'
+#
+#     skip_n33d = 64 # 128
+#     skip_n33u = 64 # 128
+#     skip_n11 = 4
+#     num_scales = 3 # 5
+#     upsample_mode = 'bilinear'
+#     pad = 'reflection'
+#     downsampler = Downsampler(2, factor, "lanczos3", phase=0.5, preserve_size=True).to(device)
+#
+#     net = get_net(input_depth, NET_TYPE, pad,
+#                   skip_n33d=skip_n33d,
+#                   skip_n33u=skip_n33u,
+#                   skip_n11=skip_n11,
+#                   num_scales=num_scales,
+#                   n_channels=2,
+#                   upsample_mode=upsample_mode).to(device)
+#
+#     psnr = run(
+#         net=net,
+#         img_np=img_hr_np,
+#         img_pil=img_hr_pil,
+#         img_corrupted_np=img_lr_np,
+#         imsize=imsize,
+#         problem="sr",
+#         num_iter=num_iter,
+#         lr=lr,
+#         beta=beta,
+#         tau=tau,
+#         downsampler=downsampler,
+#         input_depth=input_depth,
+#         device=device,
+#         index=index,
+#         seed=seed,
+#         show_every=show_every,
+#         plot=plot,
+#         save=save,
+#         save_path=save_path
+#     )
+#
+#     return psnr
+
+
+
 def run_den(
         img: int = 0,
-        num_iter: int = 5000,
-        lr: float = 3e-4,
-        beta: float = 4e-6,  # lambda in the paper
-        tau: float = 0.01,
-        input_depth: int = 16,
-        device: torch.device = torch.device('cpu'),
-        index: int = 0,
-        seed: int = 42,
-        show_every: int = 100,
-        plot: bool = True,
-        save: bool = True,
-        save_path: str = '../logs'
-) -> float:
-    imsize = (256, 256)
-
-    if img == 0:
-        fname = 'data/NORMAL-4951060-8.png'
-        imsize = (256, 256)
-    elif img == 1:
-        fname = 'data/BACTERIA-1351146-0006.png'
-        imsize = (256, 256)
-    elif img == 2:
-        fname = 'data/081_HC.png'
-        imsize = (256, 256)
-    elif img == 3:
-        fname = 'data/CNV-9997680-30.png'
-        imsize = (256, 256)
-    elif img == 4:
-        fname = 'data/VIRUS-9815549-0001.png'
-        imsize = (256, 256)
-    else:
-        assert False
-
-    if fname == 'data/NORMAL-4951060-8.jpeg':
-
-        # Add Gaussian noise to simulate speckle
-        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-        img_np = pil_to_np(img_pil)
-        p_sigma = 0.1
-        img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-
-    elif fname in ['data/BACTERIA-1351146-0006.png', 'data/VIRUS-9815549-0001.png']:
-
-        # Add Poisson noise to simulate low dose X-ray
-        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-        img_np = pil_to_np(img_pil)
-        # img_noisy_pil, img_noisy_np = get_noisy_image_poisson(img_np, p_lambda)
-        # for lam > 20, poisson can be approximated with Gaussian
-        p_sigma = 0.1
-        img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-
-    elif fname == 'data/081_HC.png':
-
-        # Add Gaussian noise to simulate speckle
-        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-        img_np = pil_to_np(img_pil)
-        p_sigma = 0.1
-        img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-
-    elif fname == 'data/CNV-9997680-30.png':
-
-        # Add Gaussian noise to simulate speckle
-        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-        img_np = pil_to_np(img_pil)
-        p_sigma = 0.1
-        img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-
-    else:
-        assert False
-
-    NET_TYPE = 'skip'
-
-    # TODO: must be changed for inp, sr
-    skip_n33d = [16, 32, 64, 128, 128]
-    skip_n33u = [16, 32, 64, 128, 128]
-    skip_n11 = 4
-    num_scales = 5
-    upsample_mode = 'bilinear'
-    pad = 'reflection'
-
-    net = get_net(input_depth, NET_TYPE, pad,
-                  skip_n33d=skip_n33d,
-                  skip_n33u=skip_n33u,
-                  skip_n11=skip_n11,
-                  num_scales=num_scales,
-                  n_channels=2,
-                  upsample_mode=upsample_mode).to(device)
-
-    psnr = run(
-        net=net,
-        img_np=img_np,
-        img_pil=img_pil,
-        img_corrupted_np=img_noisy_np,
-        imsize=imsize,
-        problem="noisy",
-        num_iter=num_iter,
-        lr=lr,
-        beta=beta,
-        tau=tau,
-        input_depth=input_depth,
-        device=device,
-        index=index,
-        seed=seed,
-        show_every=show_every,
-        plot=plot,
-        save=save,
-        save_path=save_path
-    )
-
-    return psnr
-
-
-
-def run(
-        # img: int = 0,
-        net: nn.Module,
-        img_np: np.ndarray,
-        img_pil: Image,
-        img_corrupted_np: np.ndarray,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
         imsize: Tuple[int] = (256, 256),
-        problem: str = 'noisy',
+        p_sigma: float = 0.1,
+        # problem: str = 'noisy',
         num_iter: int = 5000,
         lr: float = 3e-4,
         beta: float = 4e-6,  # lambda in the paper
         tau: float = 0.01,
         input_depth: int = 16,
+        downsampler: nn.Module = None,
+        mask: torch.Tensor = torch.tensor([1]),
         device: torch.device = torch.device('cpu'),
         index: int = 0,
         seed: int = 42,
@@ -190,8 +280,37 @@ def run(
 
     torch.backends.cudnn.benchmark = True
 
+    imsize = (256, 256)
+
+    if img == 0:
+        fname = 'data/denoising/BACTERIA-1351146-0006.png'
+        imsize = (256, 256)
+    elif img == 1:
+        fname = 'data/denoising/VIRUS-9815549-0001.png'
+        imsize = (256, 256)
+    else:
+        assert False
+
+    if fname in ['data/denoising/BACTERIA-1351146-0006.png', 'data/denoising/VIRUS-9815549-0001.png']:
+
+        # Add Poisson noise to simulate low dose X-ray
+        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+        img_np = pil_to_np(img_pil)
+        # img_noisy_pil, img_noisy_np = get_noisy_image_poisson(img_np, p_lambda)
+        # for lam > 20, poisson can be approximated with Gaussian
+        # p_sigma = 0.1
+        img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
+
+    else:
+        assert False
+
     if plot:
-        q = plot_image_grid([img_np, img_corrupted_np], 4, 6)
+        # TODO: not beautiful
+        # if img_np.shape != img_corrupted_np.shape:
+        #     _img_corrupted_np = cv2.resize(img_corrupted_np[0], img_np.shape[2:0:-1], interpolation=cv2.INTER_NEAREST)[np.newaxis]
+        # else:
+        #     _img_corrupted_np = img_corrupted_np
+        q = plot_image_grid([img_np, img_noisy_np], 4, 6)
         out_pil = np_to_pil(q)
         out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
@@ -210,7 +329,7 @@ def run(
 
     # TODO: must be changed for SR and inp
     img_torch = np_to_torch(img_np).to(device)
-    img_corrupted_torch = np_to_torch(img_corrupted_np).to(device)
+    img_noisy_torch = np_to_torch(img_noisy_np).to(device)
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
@@ -235,13 +354,22 @@ def run(
     mc_ring_buffer_epi = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
     mc_ring_buffer_ale = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
 
-    # net = get_net(input_depth, NET_TYPE, pad,
-    #               skip_n33d=skip_n33d,
-    #               skip_n33u=skip_n33u,
-    #               skip_n11=skip_n11,
-    #               num_scales=num_scales,
-    #               n_channels=2,
-    #               upsample_mode=upsample_mode).to(device)
+    NET_TYPE = 'skip'
+
+    skip_n33d = [16, 32, 64, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128]
+    skip_n11 = 4
+    num_scales = 5
+    upsample_mode = 'bilinear'
+    pad = 'reflection'
+
+    net = get_net(input_depth, NET_TYPE, pad,
+                  skip_n33d=skip_n33d,
+                  skip_n33u=skip_n33u,
+                  skip_n11=skip_n11,
+                  num_scales=num_scales,
+                  n_channels=2,
+                  upsample_mode=upsample_mode).to(device)
 
     prior = {'mu': 0.0,
              'sigma': np.sqrt(tau) * 1.0}
@@ -268,6 +396,8 @@ def run(
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
 
+    # mask = mask.to(device)
+
     pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
     for i in pbar:
         optimizer.zero_grad()
@@ -277,7 +407,7 @@ def run(
 
         out = net(net_input)
 
-        nll = gaussian_nll(out[:, :1], out[:, 1:], img_corrupted_torch)
+        nll = gaussian_nll(out[:, :1], out[:, 1:], img_noisy_torch)
         kl = net.kl()
         loss = nll + beta * kl
         loss.backward()
@@ -292,7 +422,11 @@ def run(
             out_avg = out_avg * exp_weight + out.detach() * (1 - exp_weight)
 
         with torch.no_grad():
-            mse_corrupted[i] = mse(out_avg[:, :1], img_corrupted_torch).item()
+            if downsampler is not None:
+                _out_avg = downsampler(out_avg)
+            else:
+                _out_avg = out_avg
+            mse_corrupted[i] = mse(_out_avg[:, :1], img_noisy_torch).item()
             mse_gt[i] = mse(out_avg[:, :1], img_torch).item()
 
             _out = out.detach()[:, :1].clip(0, 1)
@@ -302,10 +436,10 @@ def run(
             mc_ring_buffer_epi[i % mc_iter] = _out[0]
             mc_ring_buffer_ale[i % mc_iter] = _out_ale[0]
 
-            psnr_corrupted = peak_signal_noise_ratio(img_corrupted_torch, _out)
+            psnr_corrupted = peak_signal_noise_ratio(img_noisy_torch, _out)
             psnr_gt = peak_signal_noise_ratio(img_torch, _out)
             psnr_gt_sm = peak_signal_noise_ratio(img_torch, _out_avg)
-            ssim_corrupted = structural_similarity(img_corrupted_torch, _out)
+            ssim_corrupted = structural_similarity(img_noisy_torch, _out)
             ssim_gt = structural_similarity(img_torch, _out)
             ssim_gt_sm = structural_similarity(img_torch, _out_avg)
 
@@ -313,7 +447,7 @@ def run(
         ssims[i] = [ssim_corrupted, ssim_gt, ssim_gt_sm]
 
         if i % show_every == 0:
-            pbar.set_description(f'MSE: {mse_corrupted[i].item():.4f} | PSNR_{problem}: {psnr_corrupted:7.4f} \
+            pbar.set_description(f'MSE: {mse_corrupted[i].item():.4f} | PSNR_noisy: {psnr_corrupted:7.4f} \
 | PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
 
             _out_var = torch.var(mc_ring_buffer_epi, dim=0)
@@ -354,14 +488,14 @@ def run(
         fig, ax = plt.subplots(1, 1)
         for key, loss in MSE_CORRUPTED.items():
             ax.plot(range(len(loss)), loss, label=key)
-            ax.set_title(f'MSE {problem}')
+            ax.set_title(f'MSE noisy')
             ax.set_xlabel('iteration')
             ax.set_ylabel('mse loss')
             ax.set_ylim(0, 0.03)
             ax.grid(True)
             ax.legend()
         plt.tight_layout()
-        plt.savefig(f'{save_path}/{timestamp}/mse_{problem}.png')
+        plt.savefig(f'{save_path}/{timestamp}/mse_noisy.png')
 
         fig, ax = plt.subplots(1, 1)
         for key, loss in MSE_GT.items():
@@ -376,7 +510,7 @@ def run(
         plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
 
         fig, axs = plt.subplots(1, 3, constrained_layout=True)
-        labels = [f"psnr_{problem}", "psnr_gt", "psnr_gt_sm"]
+        labels = ["psnr_noisy", "psnr_gt", "psnr_gt_sm"]
         for key, psnr in PSNRS.items():
             psnr = np.array(psnr)
             print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
@@ -389,7 +523,7 @@ def run(
         plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
 
         fig, axs = plt.subplots(1, 3, constrained_layout=True)
-        labels = [f"ssim_{problem}", "ssim_gt", "ssim_gt_sm"]
+        labels = ["ssim_noisy", "ssim_gt", "ssim_gt_sm"]
         for key, ssim in SSIMS.items():
             ssim = np.array(ssim)
             print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
@@ -406,7 +540,596 @@ def run(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 noisy_img=img_corrupted_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 noisy_img=img_noisy_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+
+    plt.close('all')
+
+    return PSNRS['mfvi'][-1, 2]
+
+
+def run_sr(
+        img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
+        imsize: Tuple[int] = (256, 256),
+        factor: int = 4,
+        # p_sigma: float = 0.1,
+        # problem: str = 'noisy',
+        num_iter: int = 5000,
+        lr: float = 3e-4,
+        beta: float = 4e-6,  # lambda in the paper
+        tau: float = 0.01,
+        input_depth: int = 16,
+        downsampler: nn.Module = None,
+        mask: torch.Tensor = torch.tensor([1]),
+        device: torch.device = torch.device('cpu'),
+        index: int = 0,
+        seed: int = 42,
+        show_every: int = 100,
+        plot: bool = True,
+        save: bool = True,
+        save_path: str = '../logs',
+) -> float:
+    timestamp = str(time.time())
+    Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'w') as f:
+        for key, val in locals().items():
+            print(key, '=', val, file=f)
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    torch.backends.cudnn.benchmark = True
+
+    imsize = (256, 256)
+
+    if img == 0:
+        fname = 'data/super-resolution/img_139_res384.png'
+        # imsize = (256, 256)
+    elif img == 1:
+        fname = 'data/super-resolution/img_203_res.png'
+        # imsize = (256, 256)
+    else:
+        assert False
+
+    if fname in ['data/super-resolution/img_139_res384.png', 'data/super-resolution/img_203_res.png']:
+
+        imgs = load_LR_HR_imgs_sr(fname, -1, factor, enforse_div32="CROP")
+
+        img_hr_np = imgs["HR_np"]
+        img_lr_np = imgs["LR_np"]
+        img_pil = imgs["HR_pil"]
+
+        imsize = img_hr_np.shape[1:]
+
+    else:
+        assert False
+
+    if plot:
+        _img_lr_np = cv2.resize(img_lr_np[0], img_hr_np.shape[2:0:-1], interpolation=cv2.INTER_NEAREST)[np.newaxis]
+        q = plot_image_grid([img_hr_np, _img_lr_np], 4, 6)
+        out_pil = np_to_pil(q)
+        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
+
+    INPUT = 'noise'
+    # pad = 'reflection'
+    OPT_OVER = 'net'  # 'net,input'
+
+    reg_noise_std = 1. / 10.
+    LR = lr
+
+    num_iter += 1
+
+    exp_weight = 0.99
+
+    mse = torch.nn.MSELoss()
+
+    img_torch = np_to_torch(img_hr_np).to(device)
+    img_lr_torch = np_to_torch(img_lr_np).to(device)
+
+    MSE_CORRUPTED = {}
+    MSE_GT = {}
+    UNCERTS_EPI = {}
+    UNCERTS_ALE = {}
+    PSNRS = {}
+    SSIMS = {}
+
+    figsize = 4
+
+    ## MFVI
+    weight_decay = 0
+
+    net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
+
+    net_input_saved = net_input.detach().clone()
+    noise = net_input.detach().clone()
+
+    out_avg = None
+
+    mc_iter = 25
+    mc_ring_buffer_epi = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
+    mc_ring_buffer_ale = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
+
+    NET_TYPE = 'skip'
+
+    skip_n33d = 64 # 128
+    skip_n33u = 64 # 128
+    skip_n11 = 4
+    num_scales = 3 # 5
+    upsample_mode = 'bilinear'
+    pad = 'reflection'
+
+    net = get_net(input_depth, NET_TYPE, pad,
+                  skip_n33d=skip_n33d,
+                  skip_n33u=skip_n33u,
+                  skip_n11=skip_n11,
+                  num_scales=num_scales,
+                  n_channels=2,
+                  upsample_mode=upsample_mode).to(device)
+
+    prior = {'mu': 0.0,
+             'sigma': np.sqrt(tau) * 1.0}
+
+    net = MeanFieldVI(net,
+                      prior=prior,
+                      beta=beta,
+                      replace_layers='all',
+                      device=device,
+                      reparam='')
+
+    downsampler = Downsampler(2, factor, "lanczos3", phase=0.5, preserve_size=True).to(device)
+
+    mse_corrupted = np.zeros((num_iter))
+    mse_gt = np.zeros((num_iter))
+    uncerts_epi = np.zeros((num_iter // show_every + 1, 1) + imsize)
+    uncerts_ale = np.zeros((num_iter // show_every + 1, 1) + imsize)
+    psnrs = np.zeros((num_iter, 3))
+    ssims = np.zeros((num_iter, 3))
+
+    img_mean = 0
+    sample_count = 0
+    psnr_corrupted_last = 0
+
+    parameters = get_params(OPT_OVER, net, net_input)
+    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
+
+    # mask = mask.to(device)
+
+    pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
+    for i in pbar:
+        optimizer.zero_grad()
+
+        if reg_noise_std > 0:
+            net_input = net_input_saved + (noise.normal_() * reg_noise_std)
+
+        out_hr = net(net_input)
+        out_lr = downsampler(out_hr)
+
+        nll = gaussian_nll(out_lr[:, :1], out_lr[:, 1:], img_lr_torch)
+        kl = net.kl()
+        loss = nll + beta * kl
+        loss.backward()
+        optimizer.step()
+
+        out_hr[:, 1:] = torch.exp(-out_hr[:, 1:])  # aleatoric uncertainty
+
+        # Smoothing
+        if out_avg is None:
+            out_avg = out_hr.detach()
+        else:
+            out_avg = out_avg * exp_weight + out_hr.detach() * (1 - exp_weight)
+
+        with torch.no_grad():
+            mse_corrupted[i] = mse(downsampler(out_avg)[:, :1], img_lr_torch).item()
+            mse_gt[i] = mse(out_avg[:, :1], img_torch).item()
+
+            _out = out_hr.detach()[:, :1].clip(0, 1)
+            _out_lr = out_lr.detach()[:, :1].clip(0, 1)
+            _out_avg = out_avg.detach()[:, :1].clip(0, 1)
+            _out_ale = out_hr.detach()[:, 1:].clip(0, 1)
+
+            mc_ring_buffer_epi[i % mc_iter] = _out[0]
+            mc_ring_buffer_ale[i % mc_iter] = _out_ale[0]
+
+            psnr_lr = peak_signal_noise_ratio(img_lr_torch, _out_lr)
+            psnr_gt = peak_signal_noise_ratio(img_torch, _out)
+            psnr_gt_sm = peak_signal_noise_ratio(img_torch, _out_avg)
+            ssim_lr = structural_similarity(img_lr_torch, _out_lr)
+            ssim_gt = structural_similarity(img_torch, _out)
+            ssim_gt_sm = structural_similarity(img_torch, _out_avg)
+
+        psnrs[i] = [psnr_lr, psnr_gt, psnr_gt_sm]
+        ssims[i] = [ssim_lr, ssim_gt, ssim_gt_sm]
+
+        if i % show_every == 0:
+            pbar.set_description(f'MSE: {mse_corrupted[i].item():.4f} | PSNR_lr: {psnr_lr:7.4f} \
+| PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
+
+            _out_var = torch.var(mc_ring_buffer_epi, dim=0)
+            _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
+            uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+            uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
+
+            if plot:
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE MFVI')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_mfvi.png')
+                plt.close('all')
+
+    MSE_CORRUPTED['mfvi'] = mse_corrupted
+    MSE_GT['mfvi'] = mse_gt
+    UNCERTS_EPI['mfvi'] = uncerts_epi
+    UNCERTS_ALE['mfvi'] = uncerts_ale
+    PSNRS['mfvi'] = psnrs
+    SSIMS['mfvi'] = ssims
+
+    ## END
+
+    file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
+
+    if plot:
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_CORRUPTED.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title(f'MSE noisy')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.03)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_noisy.png')
+
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_GT.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title('MSE GT')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.01)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["psnr_noisy", "psnr_gt", "psnr_gt_sm"]
+        for key, psnr in PSNRS.items():
+            psnr = np.array(psnr)
+            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+            for i in range(psnr.shape[1]):
+                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('psnr')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["ssim_noisy", "ssim_gt", "ssim_gt_sm"]
+        for key, ssim in SSIMS.items():
+            ssim = np.array(ssim)
+            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+            for i in range(ssim.shape[1]):
+                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('ssim')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
+
+    file.close()
+
+    # save stuff for plotting
+    if save:
+        np.savez(f"{save_path}/{timestamp}/save.npz",
+                 lr_img=img_lr_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+
+    plt.close('all')
+
+    return PSNRS['mfvi'][-1, 2]
+
+
+def run_inp(
+        img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
+        imsize: Tuple[int] = (256, 256),
+        # factor: int = 4,
+        # p_sigma: float = 0.1,
+        # problem: str = 'noisy',
+        num_iter: int = 5000,
+        lr: float = 3e-4,
+        beta: float = 4e-6,  # lambda in the paper
+        tau: float = 0.01,
+        input_depth: int = 16,
+        downsampler: nn.Module = None,
+        mask: torch.Tensor = torch.tensor([1]),
+        device: torch.device = torch.device('cpu'),
+        index: int = 0,
+        seed: int = 42,
+        show_every: int = 100,
+        plot: bool = True,
+        save: bool = True,
+        save_path: str = '../logs',
+) -> float:
+    timestamp = str(time.time())
+    Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'w') as f:
+        for key, val in locals().items():
+            print(key, '=', val, file=f)
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    torch.backends.cudnn.benchmark = True
+
+    if img == 0:
+        fname = 'data/inpainting/hair_0_res.png'
+        mask_fname = 'data/inpainting/hair_0_res_mask.png'
+        # imsize = (256, 256)
+    elif img == 1:
+        fname = 'data/inpainting/hair_3_res.png'
+        mask_fname = 'data/inpainting/hair_3_res_mask.png'
+        # imsize = (256, 256)
+    else:
+        assert False
+
+    if fname in ['data/inpainting/hair_0_res.png', 'data/inpainting/hair_3_res.png']:
+        img_pil, img_np = get_image(fname, -1)
+        img_mask_pil, img_mask_np = get_image(mask_fname, -1)
+
+        imsize = img_np.shape[1:]
+    else:
+        assert False
+
+    if plot:
+        q = plot_image_grid([img_np, img_np * img_mask_np], 4, 6)
+        out_pil = np_to_pil(q)
+        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
+
+    INPUT = 'noise'
+    # pad = 'reflection'
+    OPT_OVER = 'net'  # 'net,input'
+
+    reg_noise_std = 1. / 10.
+    LR = lr
+
+    num_iter += 1
+
+    exp_weight = 0.99
+
+    mse = torch.nn.MSELoss()
+
+    img_torch = np_to_torch(img_np).to(device)
+    mask_torch = np_to_torch(img_mask_np)
+
+    MSE_CORRUPTED = {}
+    MSE_GT = {}
+    UNCERTS_EPI = {}
+    UNCERTS_ALE = {}
+    PSNRS = {}
+    SSIMS = {}
+
+    figsize = 4
+
+    ## MFVI
+    weight_decay = 0
+
+    net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
+
+    net_input_saved = net_input.detach().clone()
+    noise = net_input.detach().clone()
+
+    out_avg = None
+
+    mc_iter = 25
+    mc_ring_buffer_epi = torch.zeros((mc_iter, 3) + imsize)  # saves the last mc_iter reconstructions
+    mc_ring_buffer_ale = torch.zeros((mc_iter, 3) + imsize)  # saves the last mc_iter reconstructions
+
+    NET_TYPE = 'skip'
+
+    skip_n33d = [16, 32, 64, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128]
+    skip_n11 = 0
+    num_scales = 5
+    upsample_mode = 'bilinear'
+    pad = 'reflection'
+
+    net = get_net(input_depth, NET_TYPE, pad,
+                  skip_n33d=skip_n33d,
+                  skip_n33u=skip_n33u,
+                  skip_n11=skip_n11,
+                  num_scales=num_scales,
+                  n_channels=4,
+                  upsample_mode=upsample_mode).to(device)
+
+    prior = {'mu': 0.0,
+             'sigma': np.sqrt(tau) * 1.0}
+
+    net = MeanFieldVI(net,
+                      prior=prior,
+                      beta=beta,
+                      replace_layers='all',
+                      device=device,
+                      reparam='')
+
+    mse_corrupted = np.zeros((num_iter))
+    mse_gt = np.zeros((num_iter))
+    uncerts_epi = np.zeros((num_iter // show_every + 1, 3) + imsize)
+    uncerts_ale = np.zeros((num_iter // show_every + 1, 3) + imsize)
+    psnrs = np.zeros((num_iter, 3))
+    ssims = np.zeros((num_iter, 3))
+
+    img_mean = 0
+    sample_count = 0
+    psnr_corrupted_last = 0
+
+    parameters = get_params(OPT_OVER, net, net_input)
+    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
+
+    mask_torch = mask_torch.to(device)
+
+    pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
+    for i in pbar:
+        optimizer.zero_grad()
+
+        if reg_noise_std > 0:
+            net_input = net_input_saved + (noise.normal_() * reg_noise_std)
+
+        out = net(net_input)
+
+        nll = gaussian_nll(out[:, :3] * mask_torch, out[:, 3:] * mask_torch, img_torch * mask_torch)
+        kl = net.kl()
+        loss = nll + beta * kl
+        loss.backward()
+        optimizer.step()
+
+        out[:, 3:] = torch.exp(-out[:, 3:])  # aleatoric uncertainty
+
+        # Smoothing
+        if out_avg is None:
+            out_avg = out.detach()
+        else:
+            out_avg = out_avg * exp_weight + out.detach() * (1 - exp_weight)
+
+        with torch.no_grad():
+            mse_corrupted[i] = mse(out_avg[:, :3], img_torch).item()
+            mse_gt[i] = mse(out_avg[:, :3], img_torch).item()
+
+            _out = out.detach()[:, :3].clip(0, 1)
+            _out = out.detach()[:, :3].clip(0, 1)
+            _out_avg = out_avg.detach()[:, :3].clip(0, 1)
+            _out_ale = out.detach()[:, 3:].clip(0, 1)
+
+            mc_ring_buffer_epi[i % mc_iter] = _out[0]
+            mc_ring_buffer_ale[i % mc_iter] = _out_ale[0]
+
+            psnr_corrupted = peak_signal_noise_ratio(img_torch, _out)
+            psnr_gt = peak_signal_noise_ratio(img_torch * mask_torch, _out * mask_torch)
+            psnr_gt_sm = peak_signal_noise_ratio(img_torch * mask_torch, _out_avg * mask_torch)
+            ssim_corrupted = structural_similarity(img_torch, _out)
+            ssim_gt = structural_similarity(img_torch * mask_torch, _out * mask_torch)
+            ssim_gt_sm = structural_similarity(img_torch * mask_torch, _out_avg * mask_torch)
+
+        psnrs[i] = [psnr_corrupted, psnr_gt, psnr_gt_sm]
+        ssims[i] = [ssim_corrupted, ssim_gt, ssim_gt_sm]
+
+        if i % show_every == 0:
+            pbar.set_description(f'MSE: {mse_corrupted[i].item():.4f} | PSNR_corrupted: {psnr_corrupted:7.4f} \
+| PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
+
+            _out_var = torch.var(mc_ring_buffer_epi, dim=0)
+            _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
+            uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+            uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
+
+            if plot:
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE MFVI')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_mfvi.png')
+                plt.close('all')
+
+    MSE_CORRUPTED['mfvi'] = mse_corrupted
+    MSE_GT['mfvi'] = mse_gt
+    UNCERTS_EPI['mfvi'] = uncerts_epi
+    UNCERTS_ALE['mfvi'] = uncerts_ale
+    PSNRS['mfvi'] = psnrs
+    SSIMS['mfvi'] = ssims
+
+    ## END
+
+    file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
+
+    if plot:
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_CORRUPTED.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title(f'MSE corrupted')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.03)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_corrupted.png')
+
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_GT.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title('MSE GT')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.01)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["psnr_corrupted", "psnr_gt", "psnr_gt_sm"]
+        for key, psnr in PSNRS.items():
+            psnr = np.array(psnr)
+            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+            for i in range(psnr.shape[1]):
+                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('psnr')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["ssim_corrupted", "ssim_gt", "ssim_gt_sm"]
+        for key, ssim in SSIMS.items():
+            ssim = np.array(ssim)
+            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+            for i in range(ssim.shape[1]):
+                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('ssim')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
+
+    file.close()
+
+    # save stuff for plotting
+    if save:
+        np.savez(f"{save_path}/{timestamp}/save.npz",
+                 inpainting_img=img_np*img_mask_np, mse_corrupted=MSE_CORRUPTED, mse_gt=MSE_GT,
                  uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
 
     plt.close('all')
@@ -577,13 +1300,20 @@ def unnormalize_X(X_norm, beta_logbounds, tau_logbounds):
     return torch.pow(10, X_unnorm)
 
 
-def f(idx, queue, candidate, device, params):
-    res = run_den(beta=candidate[0], tau=candidate[1], index=idx, device=device, **params)
+def f(task, idx, queue, candidate, device, params):
+    if task == "denoising":
+        _run = run_den
+    elif task == "super-resolution":
+        _run = run_sr
+    elif task == "inpainting":
+        _run = run_inp
+    res = _run(beta=candidate[0], tau=candidate[1], index=idx, device=device, **params)
               # img=1, seed=1, num_iter=50, lr=2e-3, input_depth=16, save=True, save_path='./bo_logs')
     queue.put((candidate, res))
 
 
 def bo(
+        task: str,
         bo_params: Dict[str, List[float]],
         run_params: Dict,
         bo_out_path: str = './bo_results',
@@ -619,7 +1349,7 @@ def bo(
         queue = mp.Queue()
         processes = []
         for i, (candidate, dev) in enumerate(zip(candidates, itertools.cycle(device_list))):
-            p = mp.Process(target=f, args=(i, queue, candidate, dev, run_params))
+            p = mp.Process(target=f, args=(task, i, queue, candidate, dev, run_params))
             p.start()
             processes.append(p)
 
@@ -745,7 +1475,8 @@ if __name__ == '__main__':
     import pandas as pd
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--path_config", type=str, default="./bo.json")
+    parser.add_argument("--task", type=str, default="denoising")
+    parser.add_argument("--path_config", type=str, default="./bo_den.json")
     args = parser.parse_args()
 
     filter_nans = lambda d: {k: v for k, v in d.items() if v is not np.nan}
@@ -753,4 +1484,4 @@ if __name__ == '__main__':
     bo_params = filter_nans(config["bo_params"])
     run_params = filter_nans(config["run_params"])
 
-    bo(bo_params=bo_params, run_params=run_params)
+    bo(task=args.task, bo_params=bo_params, run_params=run_params)
