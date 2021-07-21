@@ -1,0 +1,25 @@
+{
+  "bo_params": {
+    "dropout_p": {
+      "logbounds": [-3, -0.1],
+      "candidates": [0.2, 0.6]
+    },
+    "weight_decay": {
+      "logbounds": [-4.0, 0.0],
+      "candidates": [0.01, 0.1]
+    }
+  },
+  "run_params": {
+    "img": 1,
+    "num_iter": 5000,
+    "lr": 2e-3,
+    "seed": 1,
+    "input_depth": 16,
+    "show_every": 100,
+    "plot": true,
+    "save": true,
+    "save_path": "./bo_logs"
+  }
+}
+
+

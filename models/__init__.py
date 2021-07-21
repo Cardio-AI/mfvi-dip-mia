@@ -3,8 +3,8 @@ from .skip import skip
 
 def get_net(input_depth, NET_TYPE, pad, upsample_mode, n_channels=3, act_fun='LeakyReLU', skip_n33d=128, skip_n33u=128,
             skip_n11=4, num_scales=5, downsample_mode='stride',
-            dropout_mode_down='2d', dropout_p_down=0.5,
-            dropout_mode_up='2d', dropout_p_up=0.5,
+            dropout_mode_down='None', dropout_p_down=0.5,
+            dropout_mode_up='None', dropout_p_up=0.5,
             dropout_mode_skip='None', dropout_p_skip=0.5,
             dropout_mode_output='None', dropout_p_output=0.5):
     if NET_TYPE == 'skip':

@@ -1,0 +1,25 @@
+{
+  "bo_params": {
+    "lr": {
+      "logbounds": [-14.0, -5.0],
+      "candidates": [1e-5, 1e-3]
+    },
+    "weight_decay": {
+      "logbounds": [-20.0, -4.0],
+      "candidates": [1e-8, 1e-4]
+    }
+  },
+  "run_params": {
+    "img": 1,
+    "num_iter": 5000,
+    "seed": 1,
+    "p_sigma": 0.1,
+    "input_depth": 16,
+    "show_every": 100,
+    "plot": true,
+    "save": true,
+    "save_path": "./bo_logs"
+  }
+}
+
+
