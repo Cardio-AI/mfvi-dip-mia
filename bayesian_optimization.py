@@ -2282,63 +2282,41 @@ def find_candidates(gp, X_, samples, acq_fn='ei'):
     return candidates, expected_improvement, acq
 
 
-def normalize_X(X_unnorm, beta_logbounds, tau_logbounds):
+def normalize_X(X_unnorm, x1_logbounds, x2_logbounds):
     X_norm = X_unnorm.clone().log10()
-    X_norm[:, 0] -= beta_logbounds[0]
-    X_norm[:, 0] /= (beta_logbounds[1] - beta_logbounds[0])
+    X_norm[:, 0] -= x1_logbounds[0]
+    X_norm[:, 0] /= (x1_logbounds[1] - x1_logbounds[0])
 
-    X_norm[:, 1] -= tau_logbounds[0]
-    X_norm[:, 1] /= (tau_logbounds[1] - tau_logbounds[0])
+    X_norm[:, 1] -= x2_logbounds[0]
+    X_norm[:, 1] /= (x2_logbounds[1] - x2_logbounds[0])
 
     return X_norm
 
 
-def unnormalize_X(X_norm, beta_logbounds, tau_logbounds):
+def unnormalize_X(X_norm, x1_logbounds, x2_logbounds):
     X_unnorm = X_norm.clone()
-    X_unnorm[:, 0] *= (beta_logbounds[1] - beta_logbounds[0])
-    X_unnorm[:, 0] += beta_logbounds[0]
+    X_unnorm[:, 0] *= (x1_logbounds[1] - x1_logbounds[0])
+    X_unnorm[:, 0] += x1_logbounds[0]
 
-    X_unnorm[:, 1] *= (tau_logbounds[1] - tau_logbounds[0])
-    X_unnorm[:, 1] += tau_logbounds[0]
+    X_unnorm[:, 1] *= (x2_logbounds[1] - x2_logbounds[0])
+    X_unnorm[:, 1] += x2_logbounds[0]
 
     return torch.pow(10, X_unnorm)
 
 
-def f(task, bayesian_technique, idx, queue, candidate, device, params):
-    if bayesian_technique == "mfvi":
-        if task == "denoising":
-            _run = run_den_mfvi
-        elif task == "super-resolution":
-            _run = run_sr_mfvi
-        elif task == "inpainting":
-            _run = run_inp_mfvi
-        else:
-            assert False
-        res = _run(temp=candidate[0], sigma=candidate[1], index=idx, device=device, **params)
-    elif bayesian_technique == "sgld":
-        if task == "denoising":
-            _run = run_den_sgld
-        elif task == "super-resolution":
-            _run = run_sr_sgld
-        elif task == "inpainting":
-            _run = run_inp_sgld
-        else:
-            assert False
-        res = _run(lr=candidate[0], weight_decay=candidate[1], index=idx, device=device, **params)
-    elif bayesian_technique == "mcd":
-        if task == "denoising":
-            _run = run_den_mcd
-        elif task == "super-resolution":
-            _run = run_sr_mcd
-        elif task == "inpainting":
-            _run = run_inp_mcd
-        else:
-            assert False
-        res = _run(dropout_p=candidate[0], weight_decay=candidate[1], index=idx, device=device, **params)
-    else:
-        assert False
+def f(task, bayes, idx, queue, candidate, device, params):
+    if task == "denoising": task = "den"
+    elif task == "inpainting": task = "inp"
+    elif task == "super-resolution": task = "sr"
+    else: assert False
+    if bayes == "mfvi": bo_candidates = {"temp": candidate[0], "sigma": candidate[1]}
+    elif bayes == "mcd": bo_candidates = {"dropout_p": candidate[0], "weight_decay": candidate[1]}
+    elif bayes == "sgld": bo_candidates = {"lr": candidate[0], "weight_decay": candidate[1]}
+    else: assert False
+    _run = globals()[f"run_{task}_{bayes}"]
 
-              # img=1, seed=1, num_iter=50, lr=2e-3, input_depth=16, save=True, save_path='./bo_logs')
+    res = _run(index=idx, device=device, **bo_candidates, **params)
+
     queue.put((candidate, res))
 
 
@@ -2393,7 +2371,7 @@ def bo(
             y_run.append(res)
 
         print()
-        print("beta      tau       psnr")
+        print(f"{list(bo_params.keys())[0]}      {list(bo_params.keys())[1]}       psnr")
         for c, y in zip(candidates_run, y_run):
             print(f"{c[0]:.6f}  {c[1]:.6f}  {y:.6f}")
 

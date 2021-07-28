@@ -1,7 +1,7 @@
 {
   "bo_params": {
     "dropout_p": {
-      "logbounds": [-3, -0.1],
+      "logbounds": [-3.0, -0.1],
       "candidates": [0.2, 0.6]
     },
     "weight_decay": {
