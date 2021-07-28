@@ -2347,7 +2347,7 @@ def bo(
         bayes: str,
         bo_params: Dict[str, List[float]],
         run_params: Dict,
-        bo_out_path: str = './bo_results_test',
+        bo_out_path: str = './bo_results',
 ) -> None:
 
     mp.set_start_method('spawn')
@@ -2371,7 +2371,7 @@ def bo(
 
     candidates = list(itertools.product(*[v["candidates"] for p, v in bo_params.items()]))
 
-    for runs_num in range(5):#100):
+    for runs_num in range(100):
 
         plt.close('all')
 
