@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 bo_exps/
 .env
+bo_logs/
+bo_results/

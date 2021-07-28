@@ -10,7 +10,6 @@ class MeanFieldVI(nn.Module):
                  net,
                  prior=None,
                  posteriors=None,
-                 beta=1.,
                  kl_type='reverse',
                  reparam='local',
                  replace_layers='all',

@@ -3,7 +3,10 @@ torchvision
 gpytorch
 scikit-learn
 scikit-image
+opencv
 numpy
 matplotlib
 seaborn
 tqdm
+pillow
+pandas

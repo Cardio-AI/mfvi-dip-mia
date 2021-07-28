@@ -13,7 +13,6 @@ from pathlib import Path
 import itertools
 
 import cv2
-from PIL import Image
 
 # third party
 import matplotlib
@@ -58,8 +57,8 @@ def run_den_mfvi(
         # problem: str = 'noisy',
         num_iter: int = 5000,
         lr: float = 3e-4,
-        beta: float = 4e-6,  # lambda in the paper
-        tau: float = 0.01,
+        temp: float = 4e-6,
+        sigma: float = 0.01,
         input_depth: int = 16,
         downsampler: nn.Module = None,
         mask: torch.Tensor = torch.tensor([1]),
@@ -74,9 +73,9 @@ def run_den_mfvi(
     timestamp = str(time.time())
     Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
 
-    with open(f'{save_path}/{timestamp}/locals.txt', 'w') as f:
+    with open(f'{save_path}/{timestamp}/locals.txt', 'w') as file:
         for key, val in locals().items():
-            print(key, '=', val, file=f)
+            print(key, '=', val, file=file)
 
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -125,12 +124,10 @@ def run_den_mfvi(
     LR = lr
 
     num_iter += 1
-
     exp_weight = 0.99
 
     mse = torch.nn.MSELoss()
 
-    # TODO: must be changed for SR and inp
     img_torch = np_to_torch(img_np).to(device)
     img_noisy_torch = np_to_torch(img_noisy_np).to(device)
 
@@ -143,7 +140,6 @@ def run_den_mfvi(
 
     figsize = 4
 
-    ## MFVI
     weight_decay = 0
 
     net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
@@ -175,11 +171,10 @@ def run_den_mfvi(
                   upsample_mode=upsample_mode).to(device)
 
     prior = {'mu': 0.0,
-             'sigma': np.sqrt(tau) * 1.0}
+             'sigma': sigma}
 
     net = MeanFieldVI(net,
                       prior=prior,
-                      beta=beta,
                       replace_layers='all',
                       device=device,
                       reparam='')
@@ -198,8 +193,6 @@ def run_den_mfvi(
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
 
-    # mask = mask.to(device)
-
     pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
     for i in pbar:
         optimizer.zero_grad()
@@ -211,7 +204,7 @@ def run_den_mfvi(
 
         nll = gaussian_nll(out[:, :1], out[:, 1:], img_noisy_torch)
         kl = net.kl()
-        loss = nll + beta * kl
+        loss = nll + temp * kl
         loss.backward()
         optimizer.step()
 
@@ -282,62 +275,57 @@ def run_den_mfvi(
     PSNRS['mfvi'] = psnrs
     SSIMS['mfvi'] = ssims
 
-    ## END
+    with open(f'{save_path}/{timestamp}/locals.txt', 'a') as file:
+        if plot:
+            fig, ax = plt.subplots(1, 1)
+            for key, loss in MSE_CORRUPTED.items():
+                ax.plot(range(len(loss)), loss, label=key)
+                ax.set_title(f'MSE noisy')
+                ax.set_xlabel('iteration')
+                ax.set_ylabel('mse loss')
+                ax.set_ylim(0, 0.03)
+                ax.grid(True)
+                ax.legend()
+            plt.tight_layout()
+            plt.savefig(f'{save_path}/{timestamp}/mse_noisy.png')
 
-    file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
+            fig, ax = plt.subplots(1, 1)
+            for key, loss in MSE_GT.items():
+                ax.plot(range(len(loss)), loss, label=key)
+                ax.set_title('MSE GT')
+                ax.set_xlabel('iteration')
+                ax.set_ylabel('mse loss')
+                ax.set_ylim(0, 0.01)
+                ax.grid(True)
+                ax.legend()
+            plt.tight_layout()
+            plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
 
-    if plot:
-        fig, ax = plt.subplots(1, 1)
-        for key, loss in MSE_CORRUPTED.items():
-            ax.plot(range(len(loss)), loss, label=key)
-            ax.set_title(f'MSE noisy')
-            ax.set_xlabel('iteration')
-            ax.set_ylabel('mse loss')
-            ax.set_ylim(0, 0.03)
-            ax.grid(True)
-            ax.legend()
-        plt.tight_layout()
-        plt.savefig(f'{save_path}/{timestamp}/mse_noisy.png')
+            fig, axs = plt.subplots(1, 3, constrained_layout=True)
+            labels = ["psnr_noisy", "psnr_gt", "psnr_gt_sm"]
+            for key, psnr in PSNRS.items():
+                psnr = np.array(psnr)
+                print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+                for i in range(psnr.shape[1]):
+                    axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                    axs[i].set_title(labels[i])
+                    axs[i].set_xlabel('iteration')
+                    axs[i].set_ylabel('psnr')
+                    axs[i].legend()
+            plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
 
-        fig, ax = plt.subplots(1, 1)
-        for key, loss in MSE_GT.items():
-            ax.plot(range(len(loss)), loss, label=key)
-            ax.set_title('MSE GT')
-            ax.set_xlabel('iteration')
-            ax.set_ylabel('mse loss')
-            ax.set_ylim(0, 0.01)
-            ax.grid(True)
-            ax.legend()
-        plt.tight_layout()
-        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
-
-        fig, axs = plt.subplots(1, 3, constrained_layout=True)
-        labels = ["psnr_noisy", "psnr_gt", "psnr_gt_sm"]
-        for key, psnr in PSNRS.items():
-            psnr = np.array(psnr)
-            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
-            for i in range(psnr.shape[1]):
-                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
-                axs[i].set_title(labels[i])
-                axs[i].set_xlabel('iteration')
-                axs[i].set_ylabel('psnr')
-                axs[i].legend()
-        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
-
-        fig, axs = plt.subplots(1, 3, constrained_layout=True)
-        labels = ["ssim_noisy", "ssim_gt", "ssim_gt_sm"]
-        for key, ssim in SSIMS.items():
-            ssim = np.array(ssim)
-            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
-            for i in range(ssim.shape[1]):
-                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
-                axs[i].set_title(labels[i])
-                axs[i].set_xlabel('iteration')
-                axs[i].set_ylabel('ssim')
-                axs[i].legend()
-        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
-
-    file.close()
+            fig, axs = plt.subplots(1, 3, constrained_layout=True)
+            labels = ["ssim_noisy", "ssim_gt", "ssim_gt_sm"]
+            for key, ssim in SSIMS.items():
+                ssim = np.array(ssim)
+                print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+                for i in range(ssim.shape[1]):
+                    axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                    axs[i].set_title(labels[i])
+                    axs[i].set_xlabel('iteration')
+                    axs[i].set_ylabel('ssim')
+                    axs[i].legend()
+            plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
     # save stuff for plotting
     if save:
@@ -2953,7 +2941,9 @@ def f(task, bayesian_technique, idx, queue, candidate, device, params):
             _run = run_sr_mfvi
         elif task == "inpainting":
             _run = run_inp_mfvi
-        res = _run(beta=candidate[0], tau=candidate[1], index=idx, device=device, **params)
+        else:
+            assert False
+        res = _run(temp=candidate[0], sigma=candidate[1], index=idx, device=device, **params)
     elif bayesian_technique == "sgld":
         if task == "denoising":
             _run = run_den_sgld
@@ -2961,6 +2951,8 @@ def f(task, bayesian_technique, idx, queue, candidate, device, params):
             _run = run_sr_sgld
         elif task == "inpainting":
             _run = run_inp_sgld
+        else:
+            assert False
         res = _run(lr=candidate[0], weight_decay=candidate[1], index=idx, device=device, **params)
     elif bayesian_technique == "mcd":
         if task == "denoising":
@@ -2969,6 +2961,8 @@ def f(task, bayesian_technique, idx, queue, candidate, device, params):
             _run = run_sr_mcd
         elif task == "inpainting":
             _run = run_inp_mcd
+        else:
+            assert False
         res = _run(dropout_p=candidate[0], weight_decay=candidate[1], index=idx, device=device, **params)
     else:
         assert False
@@ -2979,7 +2973,7 @@ def f(task, bayesian_technique, idx, queue, candidate, device, params):
 
 def bo(
         task: str,
-        bayesian_technique: str,
+        bayes: str,
         bo_params: Dict[str, List[float]],
         run_params: Dict,
         bo_out_path: str = './bo_results',
@@ -2991,10 +2985,8 @@ def bo(
     Path(bo_out_path).mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda:0")
-    device_list = [
-        torch.device("cuda:0"),
-        # torch.device("cuda:1")
-    ]
+    device_list = [torch.device(d) for d in run_params['devices']]
+    del run_params['devices']
 
     X = []
     Y = []
@@ -3015,7 +3007,7 @@ def bo(
         queue = mp.Queue()
         processes = []
         for i, (candidate, dev) in enumerate(zip(candidates, itertools.cycle(device_list))):
-            p = mp.Process(target=f, args=(task, bayesian_technique, i, queue, candidate, dev, run_params))
+            p = mp.Process(target=f, args=(task, bayes, i, queue, candidate, dev, run_params))
             p.start()
             processes.append(p)
 
@@ -3135,6 +3127,7 @@ def bo(
             candidates=candidates
         )
 
+
 if __name__ == '__main__':
     import argparse
     from collections import OrderedDict
@@ -3142,16 +3135,16 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--task", type=str, default="denoising")
-    parser.add_argument("--bayesian_technique", type=str, default="mfvi")
-    parser.add_argument("--path_config", type=str, default="./bo_configs/bo_den.json")
+    parser.add_argument("--bayes", type=str, default="mfvi")
+    parser.add_argument("--config", type=str, default="./bo_configs/bo_den.json")
     args = parser.parse_args()
 
     filter_nans = lambda d: {k: v for k, v in d.items() if v is not np.nan}
-    config = pd.read_json(args.path_config).to_dict(into=OrderedDict)
+    config = pd.read_json(args.config).to_dict(into=OrderedDict)
     bo_params = filter_nans(config["bo_params"])
     run_params = filter_nans(config["run_params"])
 
     bo(task=args.task,
-       bayesian_technique=args.bayesian_technique,
+       bayes=args.bayes,
        bo_params=bo_params,
        run_params=run_params)

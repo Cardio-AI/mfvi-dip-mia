@@ -1,12 +1,12 @@
 {
   "bo_params": {
-    "beta": {
-      "logbounds": [-8.0, -4.0],
-      "candidates": [4e-8, 4e-6]
+    "temp": {
+      "logbounds": [-10.0, -0.0],
+      "candidates": [1e-1, 1e-6]
     },
-    "tau": {
-      "logbounds": [-4.0, 0.0],
-      "candidates": [0.01, 0.1]
+    "sigma": {
+      "logbounds": [-10.0, -0.0],
+      "candidates": [1e-1, 1e-6]
     }
   },
   "run_params": {
@@ -19,8 +19,7 @@
     "show_every": 100,
     "plot": true,
     "save": true,
+    "devices": ["cuda:0", "cuda:1"],
     "save_path": "./bo_logs"
   }
 }
-
-
