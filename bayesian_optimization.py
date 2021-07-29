@@ -912,10 +912,10 @@ def run_sr_mfvi(
 
     NET_TYPE = 'skip'
 
-    skip_n33d = 64 # 128
-    skip_n33u = 64 # 128
+    skip_n33d = 128
+    skip_n33u = 128
     skip_n11 = 4
-    num_scales = 3 # 5
+    num_scales = 5
     upsample_mode = 'bilinear'
     pad = 'reflection'
 
@@ -2325,7 +2325,7 @@ def bo(
         bayes: str,
         bo_params: Dict[str, List[float]],
         run_params: Dict,
-        bo_out_path: str = './bo_results',
+        bo_out_path: str = './bo_results_inp',
 ) -> None:
 
     mp.set_start_method('spawn')

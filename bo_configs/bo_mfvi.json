@@ -11,7 +11,7 @@
   },
   "run_params": {
     "img": 1,
-    "num_iter": 5000,
+    "num_iter": 50000,
     "lr": 2e-3,
     "seed": 1,
     "p_sigma": 0.1,
@@ -20,6 +20,6 @@
     "plot": true,
     "save": true,
     "devices": ["cuda:0"],
-    "save_path": "./bo_logs"
+    "save_path": "./bo_logs_inp"
   }
 }
