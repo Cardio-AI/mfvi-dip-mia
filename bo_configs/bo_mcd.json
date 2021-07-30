@@ -19,7 +19,8 @@
     "show_every": 100,
     "plot": true,
     "save": true,
-    "save_path": "./bo_logs"
+    "devices": ["cuda:0", "cuda:1"],
+    "save_path": "./bo_logs_mcd_den"
   }
 }
 

@@ -1,10 +1,9 @@
 #!/bin/bash
 #SBATCH --partition=gpu-single
 #SBATCH --nodes=1
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:2
 #SBATCH --time=24:00:00
-#SBATCH --mem=32gb
-#SBATCH --job-name=trainSDS
+#SBATCH --job-name=bo_sgld_inp
 
 # Log compute-node infos into slurm log
 echo '***********************************'
@@ -48,12 +47,12 @@ WORKSPACE_DIR=/gpfs/bwfor/work/ws/hd_cn265-aicm
 
 USER=malte
 PATH_TO_CODE=code/mfvi-dip-mia
-PATH_TO_CONFIG=code/mfvi-dip-mia/bo_configs/bo_mfvi
+# PATH_TO_CONFIG=code/mfvi-dip-mia/bo_configs/bo_mfvi
 PATH_TO_LOGS=logs
 
-TASK=inpinting
-BAYES=mfvi
-# CONFIG=./bo_configs/bo_mfvi
+TASK=denoising
+BAYES=sgld
+CONFIG=./bo_configs/bo_sgld.json
 
 CONDA_ENV_NAME=mfvidip
 
@@ -103,5 +102,5 @@ cd ${SDS_CODE}
 pwd
 
 # Call here your python scripts, write output to job-log
-python ${PATH_TO_START_SCRIPT} --task ${TASK} --bayes ${BAYES} --config ${SDS_CONFIG} >> ${SDS_LOG_FILE}
+python ${PATH_TO_START_SCRIPT} --task ${TASK} --bayes ${BAYES} --config ${CONFIG} >> ${SDS_LOG_FILE}
 echo 'python script executed'

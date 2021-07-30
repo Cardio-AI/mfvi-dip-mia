@@ -597,6 +597,7 @@ def run_den_sgld(
         imsize: Tuple[int] = (256, 256),
         p_sigma: float = 0.1,
         num_iter: int = 5000,
+        gamma: float = 0.996,
         lr: float = 3e-4,
         weight_decay: float = 5e-8,
         input_depth: int = 16,
@@ -719,6 +720,7 @@ def run_den_sgld(
 
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
 
     param_noise_sigma = 2
 
@@ -735,6 +737,9 @@ def run_den_sgld(
         loss = mse(out[:, :1], img_noisy_torch)
         loss.backward()
         optimizer.step()
+
+        if scheduler.get_last_lr()[0] > 1e-8:
+            scheduler.step()
 
         out[:, 1:] = torch.exp(-out[:, 1:])  # aleatoric uncertainty
 
@@ -1400,6 +1405,7 @@ def run_sr_sgld(
 
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
 
     param_noise_sigma = 2
 
@@ -1417,6 +1423,9 @@ def run_sr_sgld(
         loss = mse(out_lr[:,:1], img_lr_torch)
         loss.backward()
         optimizer.step()
+
+        if scheduler.get_last_lr()[0] > 1e-8:
+            scheduler.step()
 
         out_hr[:, 1:] = torch.exp(-out_hr[:, 1:])  # aleatoric uncertainty
 
@@ -2053,6 +2062,7 @@ def run_inp_sgld(
 
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
 
     mask_torch = mask_torch.to(device)
 
@@ -2071,6 +2081,9 @@ def run_inp_sgld(
         loss = mse(out[:, :3] * mask_torch, img_torch * mask_torch)
         loss.backward()
         optimizer.step()
+
+        if scheduler.get_last_lr()[0] > 1e-8:
+            scheduler.step()
 
         out[:, 3:] = torch.exp(-out[:, 3:])  # aleatoric uncertainty
 
@@ -2311,7 +2324,7 @@ def f(task, bayes, idx, queue, candidate, device, params):
     else: assert False
     if bayes == "mfvi": bo_candidates = {"temp": candidate[0], "sigma": candidate[1]}
     elif bayes == "mcd": bo_candidates = {"dropout_p": candidate[0], "weight_decay": candidate[1]}
-    elif bayes == "sgld": bo_candidates = {"lr": candidate[0], "weight_decay": candidate[1]}
+    elif bayes == "sgld": bo_candidates = {"gamma": candidate[0], "weight_decay": candidate[1]}
     else: assert False
     _run = globals()[f"run_{task}_{bayes}"]
 
@@ -2325,7 +2338,7 @@ def bo(
         bayes: str,
         bo_params: Dict[str, List[float]],
         run_params: Dict,
-        bo_out_path: str = './bo_results_inp',
+        bo_out_path: str = './bo_results_sgld_den',
 ) -> None:
 
     mp.set_start_method('spawn')
