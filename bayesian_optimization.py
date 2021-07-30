@@ -1280,6 +1280,7 @@ def run_sr_sgld(
         imsize: Tuple[int] = (256, 256),
         factor: int = 4,
         num_iter: int = 5000,
+        gamma: flaot = 0.996,
         lr: float = 3e-4,
         weight_decay: float = 1e-4,
         input_depth: int = 16,
@@ -1942,6 +1943,7 @@ def run_inp_sgld(
         img: int = 0,
         imsize: Tuple[int] = (256, 256),
         num_iter: int = 5000,
+        gamma: float = 0.996,
         lr: float = 3e-4,
         weight_decay: float = 1e-4,
         input_depth: int = 16,
@@ -2338,7 +2340,7 @@ def bo(
         bayes: str,
         bo_params: Dict[str, List[float]],
         run_params: Dict,
-        bo_out_path: str = './bo_results_sgld_den',
+        bo_out_path: str = './bo_results_sgld_inp',
 ) -> None:
 
     mp.set_start_method('spawn')
