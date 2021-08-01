@@ -11,7 +11,7 @@
   },
   "run_params": {
     "img": 0,
-    "num_iter": 50000,
+    "num_iter": 10000,
     "lr": 2e-3,
     "seed": 1,
     "p_sigma": 0.1,
@@ -20,7 +20,7 @@
     "plot": true,
     "save": true,
     "devices": ["cuda:0", "cuda:1"],
-    "save_path": "/media/laves/bo_logs_mfvi_den",
-    "bo_results_path": "/media/laves/bo_results_mfvi_den"
+    "save_path": "/media/laves/bo_logs_mfvi_ct",
+    "bo_results_path": "/media/laves/bo_results_mfvi_ct"
   }
 }
