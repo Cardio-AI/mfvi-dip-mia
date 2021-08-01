@@ -7,20 +7,18 @@
 # 2021
 
 # std lib
-import warnings
-warnings.filterwarnings("ignore")
 import time
 from typing import Dict, List, Tuple
 from pathlib import Path
 import itertools
-import io
+
+import cv2
 
 # third party
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import cm
-import cv2
 import seaborn as sns
 sns.set()
 import numpy as np
@@ -47,105 +45,16 @@ from BayTorch.freq_to_bayes import MeanFieldVI
 torch.manual_seed(0)
 np.random.seed(0)
 
-def add_noise(model, param_noise_sigma: float, lr: float):
-    for n in [x for x in model.parameters() if len(x.size()) == 4]:
-        noise = torch.randn(n.size()) * param_noise_sigma * lr
-        noise = noise.to(n.device)
-        n.data = n.data + noise
-
-def plot_loss(
-        mse_corrupted: np.ndarray,
-        mse_gt: np.ndarray,
-        psnrs: np.ndarray,
-        iter: int,
-        path: str,
-        title: str = "MSE",
-        y_label: str = "psnr_gt_sm"
-) -> None:
-    fig, ax0 = plt.subplots()
-    ax0.plot(range(len(mse_corrupted[:iter])), mse_corrupted[:iter])
-    ax0.plot(range(len(mse_gt[:iter])), mse_gt[:iter])
-    # ax0.set_title('MSE MFVI')
-    ax0.set_title(title)
-    ax0.set_xlabel('iteration')
-    ax0.set_ylabel('mse')
-    ax0.set_ylim(0, 0.03)
-    ax0.grid(True)
-
-    ax1 = ax0.twinx()
-    ax1.plot(range(len(psnrs[:iter])), psnrs[:iter, 2], 'g')
-    # ax1.set_ylabel('psnr gt sm')
-    ax1.set_ylabel(y_label)
-
-    fig.tight_layout()
-    fig.savefig(path)
-    # fig.savefig(f'{save_path}/{timestamp}/loss_mfvi.png')
-    plt.close('all')
-
-def plot_results(
-        MSE_CORRUPTED: {str: np.ndarray},
-        MSE_GT: {str, np.ndarray},
-        PSNRS: {str, np.ndarray},
-        SSIMS: {str: np.ndarray},
-        save_path: str,
-        timestamp: str,
-        file: io.TextIOWrapper,
-) -> None:
-    fig, ax = plt.subplots(1, 1)
-    for key, loss in MSE_CORRUPTED.items():
-        ax.plot(range(len(loss)), loss, label=key)
-        ax.set_title(f'MSE noisy')
-        ax.set_xlabel('iteration')
-        ax.set_ylabel('mse loss')
-        ax.set_ylim(0, 0.03)
-        ax.grid(True)
-        ax.legend()
-    plt.tight_layout()
-    plt.savefig(f'{save_path}/{timestamp}/mse_noisy.png')
-
-    fig, ax = plt.subplots(1, 1)
-    for key, loss in MSE_GT.items():
-        ax.plot(range(len(loss)), loss, label=key)
-        ax.set_title('MSE GT')
-        ax.set_xlabel('iteration')
-        ax.set_ylabel('mse loss')
-        ax.set_ylim(0, 0.01)
-        ax.grid(True)
-        ax.legend()
-    plt.tight_layout()
-    plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
-
-    fig, axs = plt.subplots(1, 3, constrained_layout=True)
-    labels = ["psnr_noisy", "psnr_gt", "psnr_gt_sm"]
-    for key, psnr in PSNRS.items():
-        psnr = np.array(psnr)
-        print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
-        for i in range(psnr.shape[1]):
-            axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
-            axs[i].set_title(labels[i])
-            axs[i].set_xlabel('iteration')
-            axs[i].set_ylabel('psnr')
-            axs[i].legend()
-    plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
-
-    fig, axs = plt.subplots(1, 3, constrained_layout=True)
-    labels = ["ssim_noisy", "ssim_gt", "ssim_gt_sm"]
-    for key, ssim in SSIMS.items():
-        ssim = np.array(ssim)
-        print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
-        for i in range(ssim.shape[1]):
-            axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
-            axs[i].set_title(labels[i])
-            axs[i].set_xlabel('iteration')
-            axs[i].set_ylabel('ssim')
-            axs[i].legend()
-    plt.savefig(f'{save_path}/{timestamp}/ssims.png')
-
 
 def run_den_mfvi(
         img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
         imsize: Tuple[int] = (256, 256),
         p_sigma: float = 0.1,
+        # problem: str = 'noisy',
         num_iter: int = 5000,
         lr: float = 3e-4,
         temp: float = 4e-6,
@@ -160,8 +69,6 @@ def run_den_mfvi(
         plot: bool = True,
         save: bool = True,
         save_path: str = '../logs',
-        *args,
-        **kwargs
 ) -> float:
     timestamp = str(time.time())
     Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
@@ -200,6 +107,11 @@ def run_den_mfvi(
         assert False
 
     if plot:
+        # TODO: not beautiful
+        # if img_np.shape != img_corrupted_np.shape:
+        #     _img_corrupted_np = cv2.resize(img_corrupted_np[0], img_np.shape[2:0:-1], interpolation=cv2.INTER_NEAREST)[np.newaxis]
+        # else:
+        #     _img_corrupted_np = img_corrupted_np
         q = plot_image_grid([img_np, img_noisy_np], 4, 6)
         out_pil = np_to_pil(q)
         out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
@@ -339,7 +251,22 @@ def run_den_mfvi(
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
-                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mfvi.png', "MSE MFVI")
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE MFVI')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_mfvi.png')
+                plt.close('all')
 
     MSE_CORRUPTED['mfvi'] = mse_corrupted
     MSE_GT['mfvi'] = mse_gt
@@ -350,7 +277,55 @@ def run_den_mfvi(
 
     with open(f'{save_path}/{timestamp}/locals.txt', 'a') as file:
         if plot:
-            plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+            fig, ax = plt.subplots(1, 1)
+            for key, loss in MSE_CORRUPTED.items():
+                ax.plot(range(len(loss)), loss, label=key)
+                ax.set_title(f'MSE noisy')
+                ax.set_xlabel('iteration')
+                ax.set_ylabel('mse loss')
+                ax.set_ylim(0, 0.03)
+                ax.grid(True)
+                ax.legend()
+            plt.tight_layout()
+            plt.savefig(f'{save_path}/{timestamp}/mse_noisy.png')
+
+            fig, ax = plt.subplots(1, 1)
+            for key, loss in MSE_GT.items():
+                ax.plot(range(len(loss)), loss, label=key)
+                ax.set_title('MSE GT')
+                ax.set_xlabel('iteration')
+                ax.set_ylabel('mse loss')
+                ax.set_ylim(0, 0.01)
+                ax.grid(True)
+                ax.legend()
+            plt.tight_layout()
+            plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+            fig, axs = plt.subplots(1, 3, constrained_layout=True)
+            labels = ["psnr_noisy", "psnr_gt", "psnr_gt_sm"]
+            for key, psnr in PSNRS.items():
+                psnr = np.array(psnr)
+                print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+                for i in range(psnr.shape[1]):
+                    axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                    axs[i].set_title(labels[i])
+                    axs[i].set_xlabel('iteration')
+                    axs[i].set_ylabel('psnr')
+                    axs[i].legend()
+            plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+            fig, axs = plt.subplots(1, 3, constrained_layout=True)
+            labels = ["ssim_noisy", "ssim_gt", "ssim_gt_sm"]
+            for key, ssim in SSIMS.items():
+                ssim = np.array(ssim)
+                print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+                for i in range(ssim.shape[1]):
+                    axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                    axs[i].set_title(labels[i])
+                    axs[i].set_xlabel('iteration')
+                    axs[i].set_ylabel('ssim')
+                    axs[i].legend()
+            plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
     # save stuff for plotting
     if save:
@@ -365,12 +340,19 @@ def run_den_mfvi(
 
 def run_den_mcd(
         img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
         imsize: Tuple[int] = (256, 256),
         p_sigma: float = 0.1,
+        # problem: str = 'noisy',
         num_iter: int = 5000,
         lr: float = 3e-4,
         dropout_p: float = 0.3,
         weight_decay: float = 3e-4,
+        # beta: float = 4e-6,  # lambda in the paper
+        # tau: float = 0.01,
         input_depth: int = 16,
         downsampler: nn.Module = None,
         mask: torch.Tensor = torch.tensor([1]),
@@ -381,8 +363,6 @@ def run_den_mcd(
         plot: bool = True,
         save: bool = True,
         save_path: str = '../logs',
-        *args,
-        **kwargs
 ) -> float:
     timestamp = str(time.time())
     Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
@@ -438,6 +418,7 @@ def run_den_mcd(
 
     mse = torch.nn.MSELoss()
 
+    # TODO: must be changed for SR and inp
     img_torch = np_to_torch(img_np).to(device)
     img_noisy_torch = np_to_torch(img_noisy_np).to(device)
 
@@ -449,6 +430,9 @@ def run_den_mcd(
     SSIMS = {}
 
     figsize = 4
+
+    ## MFVI
+    # weight_decay = 0
 
     net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
 
@@ -491,6 +475,16 @@ def run_den_mcd(
                   dropout_mode_output=dropout_mode_output,
                   dropout_p_output=dropout_p).to(device)
 
+    # prior = {'mu': 0.0,
+    #          'sigma': np.sqrt(tau) * 1.0}
+
+    # net = MeanFieldVI(net,
+    #                   prior=prior,
+    #                   beta=beta,
+    #                   replace_layers='all',
+    #                   device=device,
+    #                   reparam='')
+
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
     uncerts_epi = np.zeros((num_iter // show_every + 1, 1) + imsize)
@@ -517,6 +511,8 @@ def run_den_mcd(
         out = net(net_input)
 
         loss = gaussian_nll(out[:, :1], out[:, 1:], img_noisy_torch)
+        # kl = net.kl()
+        # loss = nll + beta * kl
         loss.backward()
         optimizer.step()
 
@@ -563,7 +559,22 @@ def run_den_mcd(
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
-                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mcd.png', "MSE MC Dropout")
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE MC Dropout')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_mcd.png')
+                plt.close('all')
 
     MSE_CORRUPTED['mcd'] = mse_corrupted
     MSE_GT['mcd'] = mse_gt
@@ -577,7 +588,55 @@ def run_den_mcd(
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
     if plot:
-        plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_CORRUPTED.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title(f'MSE noisy')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.03)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_noisy.png')
+
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_GT.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title('MSE GT')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.01)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["psnr_noisy", "psnr_gt", "psnr_gt_sm"]
+        for key, psnr in PSNRS.items():
+            psnr = np.array(psnr)
+            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+            for i in range(psnr.shape[1]):
+                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('psnr')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["ssim_noisy", "ssim_gt", "ssim_gt_sm"]
+        for key, ssim in SSIMS.items():
+            ssim = np.array(ssim)
+            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+            for i in range(ssim.shape[1]):
+                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('ssim')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
     file.close()
 
@@ -594,12 +653,18 @@ def run_den_mcd(
 
 def run_den_sgld(
         img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
         imsize: Tuple[int] = (256, 256),
         p_sigma: float = 0.1,
+        # problem: str = 'noisy',
         num_iter: int = 5000,
-        gamma: float = 0.996,
         lr: float = 3e-4,
         weight_decay: float = 5e-8,
+        # beta: float = 4e-6,  # lambda in the paper
+        # tau: float = 0.01,
         input_depth: int = 16,
         downsampler: nn.Module = None,
         mask: torch.Tensor = torch.tensor([1]),
@@ -610,8 +675,6 @@ def run_den_sgld(
         plot: bool = True,
         save: bool = True,
         save_path: str = '../logs',
-        *args,
-        **kwargs
 ) -> float:
     timestamp = str(time.time())
     Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
@@ -679,6 +742,9 @@ def run_den_sgld(
 
     figsize = 4
 
+    ## MFVI
+    # weight_decay = 0
+
     net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
 
     net_input_saved = net_input.detach().clone()
@@ -707,6 +773,16 @@ def run_den_sgld(
                   n_channels=2,
                   upsample_mode=upsample_mode).to(device)
 
+    # prior = {'mu': 0.0,
+    #          'sigma': np.sqrt(tau) * 1.0}
+    #
+    # net = MeanFieldVI(net,
+    #                   prior=prior,
+    #                   beta=beta,
+    #                   replace_layers='all',
+    #                   device=device,
+    #                   reparam='')
+
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
     uncerts_epi = np.zeros((num_iter // show_every + 1, 1) + imsize)
@@ -720,26 +796,33 @@ def run_den_sgld(
 
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+
+    # mask = mask.to(device)
 
     param_noise_sigma = 2
+
+    def add_noise(model):
+        for n in [x for x in model.parameters() if len(x.size()) == 4]:
+            noise = torch.randn(n.size()) * param_noise_sigma * LR
+            noise = noise.to(n.device)
+            n.data = n.data + noise
 
     pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
     for i in pbar:
         optimizer.zero_grad()
-        add_noise(net, param_noise_sigma, LR)
+        add_noise(net)
 
         if reg_noise_std > 0:
             net_input = net_input_saved + (noise.normal_() * reg_noise_std)
 
         out = net(net_input)
 
+        # nll = gaussian_nll(out[:, :1], out[:, 1:], img_noisy_torch)
+        # kl = net.kl()
+        # loss = nll + beta * kl
         loss = mse(out[:, :1], img_noisy_torch)
         loss.backward()
         optimizer.step()
-
-        if scheduler.get_last_lr()[0] > 1e-8:
-            scheduler.step()
 
         out[:, 1:] = torch.exp(-out[:, 1:])  # aleatoric uncertainty
 
@@ -784,7 +867,22 @@ def run_den_sgld(
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
-                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_sgld.png', "MSE SGLD")
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE SGLD')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_sgld.png')
+                plt.close('all')
 
     MSE_CORRUPTED['sgld'] = mse_corrupted
     MSE_GT['sgld'] = mse_gt
@@ -798,7 +896,55 @@ def run_den_sgld(
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
     if plot:
-        plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_CORRUPTED.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title(f'MSE noisy')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.03)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_noisy.png')
+
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_GT.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title('MSE GT')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.01)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["psnr_noisy", "psnr_gt", "psnr_gt_sm"]
+        for key, psnr in PSNRS.items():
+            psnr = np.array(psnr)
+            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+            for i in range(psnr.shape[1]):
+                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('psnr')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["ssim_noisy", "ssim_gt", "ssim_gt_sm"]
+        for key, ssim in SSIMS.items():
+            ssim = np.array(ssim)
+            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+            for i in range(ssim.shape[1]):
+                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('ssim')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
     file.close()
 
@@ -815,12 +961,18 @@ def run_den_sgld(
 
 def run_sr_mfvi(
         img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
         imsize: Tuple[int] = (256, 256),
         factor: int = 4,
+        # p_sigma: float = 0.1,
+        # problem: str = 'noisy',
         num_iter: int = 5000,
         lr: float = 3e-4,
-        temp: float = 4e-6,  # lambda in the paper
-        sigma: float = 0.01,
+        beta: float = 4e-6,  # lambda in the paper
+        tau: float = 0.01,
         input_depth: int = 16,
         downsampler: nn.Module = None,
         mask: torch.Tensor = torch.tensor([1]),
@@ -831,8 +983,6 @@ def run_sr_mfvi(
         plot: bool = True,
         save: bool = True,
         save_path: str = '../logs',
-        *args,
-        **kwargs
 ) -> float:
     timestamp = str(time.time())
     Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
@@ -917,10 +1067,10 @@ def run_sr_mfvi(
 
     NET_TYPE = 'skip'
 
-    skip_n33d = 128
-    skip_n33u = 128
+    skip_n33d = 64 # 128
+    skip_n33u = 64 # 128
     skip_n11 = 4
-    num_scales = 5
+    num_scales = 3 # 5
     upsample_mode = 'bilinear'
     pad = 'reflection'
 
@@ -933,11 +1083,11 @@ def run_sr_mfvi(
                   upsample_mode=upsample_mode).to(device)
 
     prior = {'mu': 0.0,
-             'sigma': sigma}
+             'sigma': np.sqrt(tau) * 1.0}
 
     net = MeanFieldVI(net,
                       prior=prior,
-                      # beta=beta,
+                      beta=beta,
                       replace_layers='all',
                       device=device,
                       reparam='')
@@ -972,7 +1122,7 @@ def run_sr_mfvi(
 
         nll = gaussian_nll(out_lr[:, :1], out_lr[:, 1:], img_lr_torch)
         kl = net.kl()
-        loss = nll + temp * kl
+        loss = nll + beta * kl
         loss.backward()
         optimizer.step()
 
@@ -1016,7 +1166,22 @@ def run_sr_mfvi(
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
-                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mfvi.png', "MSE MFVI")
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE MFVI')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_mfvi.png')
+                plt.close('all')
 
     MSE_CORRUPTED['mfvi'] = mse_corrupted
     MSE_GT['mfvi'] = mse_gt
@@ -1030,7 +1195,55 @@ def run_sr_mfvi(
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
     if plot:
-        plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_CORRUPTED.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title(f'MSE lr')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.03)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_lr.png')
+
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_GT.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title('MSE GT')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.01)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["psnr_lr", "psnr_gt", "psnr_gt_sm"]
+        for key, psnr in PSNRS.items():
+            psnr = np.array(psnr)
+            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+            for i in range(psnr.shape[1]):
+                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('psnr')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["ssim_lr", "ssim_gt", "ssim_gt_sm"]
+        for key, ssim in SSIMS.items():
+            ssim = np.array(ssim)
+            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+            for i in range(ssim.shape[1]):
+                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('ssim')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
     file.close()
 
@@ -1047,12 +1260,20 @@ def run_sr_mfvi(
 
 def run_sr_mcd(
         img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
         imsize: Tuple[int] = (256, 256),
         factor: int = 4,
+        # p_sigma: float = 0.1,
+        # problem: str = 'noisy',
         num_iter: int = 5000,
         lr: float = 3e-4,
         dropout_p: float = 0.2,
         weight_decay: float = 1e-4,
+        # beta: float = 4e-6,  # lambda in the paper
+        # tau: float = 0.01,
         input_depth: int = 16,
         downsampler: nn.Module = None,
         mask: torch.Tensor = torch.tensor([1]),
@@ -1063,8 +1284,6 @@ def run_sr_mcd(
         plot: bool = True,
         save: bool = True,
         save_path: str = '../logs',
-        *args,
-        **kwargs
 ) -> float:
     timestamp = str(time.time())
     Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
@@ -1132,6 +1351,9 @@ def run_sr_mcd(
     SSIMS = {}
 
     figsize = 4
+
+    ## MFVI
+    # weight_decay = 0
 
     net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
 
@@ -1174,6 +1396,16 @@ def run_sr_mcd(
                   dropout_mode_output=dropout_mode_output,
                   dropout_p_output=dropout_p).to(device)
 
+    # prior = {'mu': 0.0,
+    #          'sigma': np.sqrt(tau) * 1.0}
+    #
+    # net = MeanFieldVI(net,
+    #                   prior=prior,
+    #                   beta=beta,
+    #                   replace_layers='all',
+    #                   device=device,
+    #                   reparam='')
+
     downsampler = Downsampler(2, factor, "lanczos3", phase=0.5, preserve_size=True).to(device)
 
     mse_corrupted = np.zeros((num_iter))
@@ -1203,6 +1435,8 @@ def run_sr_mcd(
         out_lr = downsampler(out_hr)
 
         loss = gaussian_nll(out_lr[:, :1], out_lr[:, 1:], img_lr_torch)
+        # kl = net.kl()
+        # loss = nll + beta * kl
         loss.backward()
         optimizer.step()
 
@@ -1246,7 +1480,22 @@ def run_sr_mcd(
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
-                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mcd.png', "MSE MC Dropout")
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE MCD')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_mcd.png')
+                plt.close('all')
 
     MSE_CORRUPTED['mcd'] = mse_corrupted
     MSE_GT['mcd'] = mse_gt
@@ -1260,7 +1509,55 @@ def run_sr_mcd(
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
     if plot:
-        plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_CORRUPTED.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title(f'MSE lr')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.03)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_lr.png')
+
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_GT.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title('MSE HR')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.01)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["psnr_lr", "psnr_gt", "psnr_gt_sm"]
+        for key, psnr in PSNRS.items():
+            psnr = np.array(psnr)
+            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+            for i in range(psnr.shape[1]):
+                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('psnr')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["ssim_lr", "ssim_gt", "ssim_gt_sm"]
+        for key, ssim in SSIMS.items():
+            ssim = np.array(ssim)
+            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+            for i in range(ssim.shape[1]):
+                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('ssim')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
     file.close()
 
@@ -1277,12 +1574,20 @@ def run_sr_mcd(
 
 def run_sr_sgld(
         img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
         imsize: Tuple[int] = (256, 256),
         factor: int = 4,
+        # p_sigma: float = 0.1,
+        # problem: str = 'noisy',
         num_iter: int = 5000,
-        gamma: flaot = 0.996,
         lr: float = 3e-4,
+        # dropout_p: float = 0.2,
         weight_decay: float = 1e-4,
+        # beta: float = 4e-6,  # lambda in the paper
+        # tau: float = 0.01,
         input_depth: int = 16,
         downsampler: nn.Module = None,
         mask: torch.Tensor = torch.tensor([1]),
@@ -1293,8 +1598,6 @@ def run_sr_sgld(
         plot: bool = True,
         save: bool = True,
         save_path: str = '../logs',
-        *args,
-        **kwargs
 ) -> float:
     timestamp = str(time.time())
     Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
@@ -1363,6 +1666,9 @@ def run_sr_sgld(
 
     figsize = 4
 
+    ## MFVI
+    # weight_decay = 0
+
     net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
 
     net_input_saved = net_input.detach().clone()
@@ -1391,6 +1697,16 @@ def run_sr_sgld(
                   n_channels=2,
                   upsample_mode=upsample_mode).to(device)
 
+    # prior = {'mu': 0.0,
+    #          'sigma': np.sqrt(tau) * 1.0}
+    #
+    # net = MeanFieldVI(net,
+    #                   prior=prior,
+    #                   beta=beta,
+    #                   replace_layers='all',
+    #                   device=device,
+    #                   reparam='')
+
     downsampler = Downsampler(2, factor, "lanczos3", phase=0.5, preserve_size=True).to(device)
 
     mse_corrupted = np.zeros((num_iter))
@@ -1406,14 +1722,21 @@ def run_sr_sgld(
 
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+
+    # mask = mask.to(device)
 
     param_noise_sigma = 2
+
+    def add_noise(model):
+        for n in [x for x in model.parameters() if len(x.size()) == 4]:
+            noise = torch.randn(n.size()) * param_noise_sigma * LR
+            noise = noise.to(n.device)
+            n.data = n.data + noise
 
     pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
     for i in pbar:
         optimizer.zero_grad()
-        add_noise(net, param_noise_sigma, LR)
+        add_noise(net)
 
         if reg_noise_std > 0:
             net_input = net_input_saved + (noise.normal_() * reg_noise_std)
@@ -1421,12 +1744,12 @@ def run_sr_sgld(
         out_hr = net(net_input)
         out_lr = downsampler(out_hr)
 
+        # loss = gaussian_nll(out_lr[:, :1], out_lr[:, 1:], img_lr_torch)
+        # kl = net.kl()
+        # loss = nll + beta * kl
         loss = mse(out_lr[:,:1], img_lr_torch)
         loss.backward()
         optimizer.step()
-
-        if scheduler.get_last_lr()[0] > 1e-8:
-            scheduler.step()
 
         out_hr[:, 1:] = torch.exp(-out_hr[:, 1:])  # aleatoric uncertainty
 
@@ -1468,7 +1791,22 @@ def run_sr_sgld(
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
-                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_sgld.png', "MSE SGLD")
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE SGLD')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_sgld.png')
+                plt.close('all')
 
     MSE_CORRUPTED['sgld'] = mse_corrupted
     MSE_GT['sgld'] = mse_gt
@@ -1482,7 +1820,55 @@ def run_sr_sgld(
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
     if plot:
-        plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_CORRUPTED.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title(f'MSE lr')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.03)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_lr.png')
+
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_GT.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title('MSE HR')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.01)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["psnr_lr", "psnr_gt", "psnr_gt_sm"]
+        for key, psnr in PSNRS.items():
+            psnr = np.array(psnr)
+            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+            for i in range(psnr.shape[1]):
+                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('psnr')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["ssim_lr", "ssim_gt", "ssim_gt_sm"]
+        for key, ssim in SSIMS.items():
+            ssim = np.array(ssim)
+            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+            for i in range(ssim.shape[1]):
+                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('ssim')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
     file.close()
 
@@ -1499,11 +1885,18 @@ def run_sr_sgld(
 
 def run_inp_mfvi(
         img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
         imsize: Tuple[int] = (256, 256),
+        # factor: int = 4,
+        # p_sigma: float = 0.1,
+        # problem: str = 'noisy',
         num_iter: int = 5000,
         lr: float = 3e-4,
-        temp: float = 4e-6,  # lambda in the paper
-        sigma: float = 0.01,
+        beta: float = 4e-6,  # lambda in the paper
+        tau: float = 0.01,
         input_depth: int = 16,
         downsampler: nn.Module = None,
         mask: torch.Tensor = torch.tensor([1]),
@@ -1514,8 +1907,6 @@ def run_inp_mfvi(
         plot: bool = True,
         save: bool = True,
         save_path: str = '../logs',
-        *args,
-        **kwargs
 ) -> float:
     timestamp = str(time.time())
     Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
@@ -1610,11 +2001,11 @@ def run_inp_mfvi(
                   upsample_mode=upsample_mode).to(device)
 
     prior = {'mu': 0.0,
-             'sigma': sigma}
+             'sigma': np.sqrt(tau) * 1.0}
 
     net = MeanFieldVI(net,
                       prior=prior,
-                      # beta=beta,
+                      beta=beta,
                       replace_layers='all',
                       device=device,
                       reparam='')
@@ -1646,7 +2037,7 @@ def run_inp_mfvi(
 
         nll = gaussian_nll(out[:, :3] * mask_torch, out[:, 3:] * mask_torch, img_torch * mask_torch)
         kl = net.kl()
-        loss = nll + temp * kl
+        loss = nll + beta * kl
         loss.backward()
         optimizer.step()
 
@@ -1690,7 +2081,22 @@ def run_inp_mfvi(
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
-                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mfvi.png', "MSE MFVI")
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE MFVI')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_mfvi.png')
+                plt.close('all')
 
     MSE_CORRUPTED['mfvi'] = mse_corrupted
     MSE_GT['mfvi'] = mse_gt
@@ -1704,7 +2110,55 @@ def run_inp_mfvi(
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
     if plot:
-        plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_CORRUPTED.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title(f'MSE corrupted')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.03)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_corrupted.png')
+
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_GT.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title('MSE GT')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.01)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["psnr_corrupted", "psnr_gt", "psnr_gt_sm"]
+        for key, psnr in PSNRS.items():
+            psnr = np.array(psnr)
+            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+            for i in range(psnr.shape[1]):
+                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('psnr')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["ssim_corrupted", "ssim_gt", "ssim_gt_sm"]
+        for key, ssim in SSIMS.items():
+            ssim = np.array(ssim)
+            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+            for i in range(ssim.shape[1]):
+                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('ssim')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
     file.close()
 
@@ -1721,11 +2175,20 @@ def run_inp_mfvi(
 
 def run_inp_mcd(
         img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
         imsize: Tuple[int] = (256, 256),
+        # factor: int = 4,
+        # p_sigma: float = 0.1,
+        # problem: str = 'noisy',
         num_iter: int = 5000,
         lr: float = 3e-4,
         dropout_p: float = 0.2,
         weight_decay: float = 1e-4,
+        # beta: float = 4e-6,  # lambda in the paper
+        # tau: float = 0.01,
         input_depth: int = 16,
         downsampler: nn.Module = None,
         mask: torch.Tensor = torch.tensor([1]),
@@ -1736,8 +2199,6 @@ def run_inp_mcd(
         plot: bool = True,
         save: bool = True,
         save_path: str = '../logs',
-        *args,
-        **kwargs
 ) -> float:
     timestamp = str(time.time())
     Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
@@ -1800,6 +2261,9 @@ def run_inp_mcd(
 
     figsize = 4
 
+    ## MFVI
+    # weight_decay = 0
+
     net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
 
     net_input_saved = net_input.detach().clone()
@@ -1841,6 +2305,16 @@ def run_inp_mcd(
                   dropout_mode_output=dropout_mode_output,
                   dropout_p_output=dropout_p).to(device)
 
+    # prior = {'mu': 0.0,
+    #          'sigma': np.sqrt(tau) * 1.0}
+    #
+    # net = MeanFieldVI(net,
+    #                   prior=prior,
+    #                   beta=beta,
+    #                   replace_layers='all',
+    #                   device=device,
+    #                   reparam='')
+
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
     uncerts_epi = np.zeros((num_iter // show_every + 1, 3) + imsize)
@@ -1867,6 +2341,8 @@ def run_inp_mcd(
         out = net(net_input)
 
         loss = gaussian_nll(out[:, :3] * mask_torch, out[:, 3:] * mask_torch, img_torch * mask_torch)
+        # kl = net.kl()
+        # loss = nll + beta * kl
         loss.backward()
         optimizer.step()
 
@@ -1910,7 +2386,22 @@ def run_inp_mcd(
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
-                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mcd.png', "MSE MC Dropout")
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE MCD')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_mcd.png')
+                plt.close('all')
 
     MSE_CORRUPTED['mcd'] = mse_corrupted
     MSE_GT['mcd'] = mse_gt
@@ -1924,7 +2415,55 @@ def run_inp_mcd(
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
     if plot:
-        plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_CORRUPTED.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title(f'MSE corrupted')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.03)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_corrupted.png')
+
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_GT.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title('MSE GT')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.01)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["psnr_corrupted", "psnr_gt", "psnr_gt_sm"]
+        for key, psnr in PSNRS.items():
+            psnr = np.array(psnr)
+            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+            for i in range(psnr.shape[1]):
+                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('psnr')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["ssim_corrupted", "ssim_gt", "ssim_gt_sm"]
+        for key, ssim in SSIMS.items():
+            ssim = np.array(ssim)
+            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+            for i in range(ssim.shape[1]):
+                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('ssim')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
     file.close()
 
@@ -1941,11 +2480,20 @@ def run_inp_mcd(
 
 def run_inp_sgld(
         img: int = 0,
+        # net: nn.Module,
+        # img_np: np.ndarray,
+        # img_pil: Image,
+        # img_corrupted_np: np.ndarray,
         imsize: Tuple[int] = (256, 256),
+        # factor: int = 4,
+        # p_sigma: float = 0.1,
+        # problem: str = 'noisy',
         num_iter: int = 5000,
-        gamma: float = 0.996,
         lr: float = 3e-4,
+        # dropout_p: float = 0.2,
         weight_decay: float = 1e-4,
+        # beta: float = 4e-6,  # lambda in the paper
+        # tau: float = 0.01,
         input_depth: int = 16,
         downsampler: nn.Module = None,
         mask: torch.Tensor = torch.tensor([1]),
@@ -1956,8 +2504,6 @@ def run_inp_sgld(
         plot: bool = True,
         save: bool = True,
         save_path: str = '../logs',
-        *args,
-        **kwargs
 ) -> float:
     timestamp = str(time.time())
     Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
@@ -2064,28 +2610,33 @@ def run_inp_sgld(
 
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
 
     mask_torch = mask_torch.to(device)
 
     param_noise_sigma = 2
 
+    def add_noise(model):
+        for n in [x for x in model.parameters() if len(x.size()) == 4]:
+            noise = torch.randn(n.size()) * param_noise_sigma * LR
+            noise = noise.to(n.device)
+            n.data = n.data + noise
+
     pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
     for i in pbar:
         optimizer.zero_grad()
-        add_noise(net, param_noise_sigma, LR)
+        add_noise(net)
 
         if reg_noise_std > 0:
             net_input = net_input_saved + (noise.normal_() * reg_noise_std)
 
         out = net(net_input)
 
+        # loss = gaussian_nll(out[:, :3] * mask_torch, out[:, 3:] * mask_torch, img_torch * mask_torch)
+        # kl = net.kl()
+        # loss = nll + beta * kl
         loss = mse(out[:, :3] * mask_torch, img_torch * mask_torch)
         loss.backward()
         optimizer.step()
-
-        if scheduler.get_last_lr()[0] > 1e-8:
-            scheduler.step()
 
         out[:, 3:] = torch.exp(-out[:, 3:])  # aleatoric uncertainty
 
@@ -2127,7 +2678,22 @@ def run_inp_sgld(
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
-                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_sgld.png', "MSE SGLD")
+                fig, ax0 = plt.subplots()
+                ax0.plot(range(len(mse_corrupted[:i])), mse_corrupted[:i])
+                ax0.plot(range(len(mse_gt[:i])), mse_gt[:i])
+                ax0.set_title('MSE SGLD')
+                ax0.set_xlabel('iteration')
+                ax0.set_ylabel('mse')
+                ax0.set_ylim(0, 0.03)
+                ax0.grid(True)
+
+                ax1 = ax0.twinx()
+                ax1.plot(range(len(psnrs[:i])), psnrs[:i, 2], 'g')
+                ax1.set_ylabel('psnr gt sm')
+
+                fig.tight_layout()
+                fig.savefig(f'{save_path}/{timestamp}/loss_sgld.png')
+                plt.close('all')
 
     MSE_CORRUPTED['sgld'] = mse_corrupted
     MSE_GT['sgld'] = mse_gt
@@ -2141,7 +2707,55 @@ def run_inp_sgld(
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
     if plot:
-        plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_CORRUPTED.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title(f'MSE corrupted')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.03)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_corrupted.png')
+
+        fig, ax = plt.subplots(1, 1)
+        for key, loss in MSE_GT.items():
+            ax.plot(range(len(loss)), loss, label=key)
+            ax.set_title('MSE GT')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('mse loss')
+            ax.set_ylim(0, 0.01)
+            ax.grid(True)
+            ax.legend()
+        plt.tight_layout()
+        plt.savefig(f'{save_path}/{timestamp}/mse_gt.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["psnr_corrupted", "psnr_gt", "psnr_gt_sm"]
+        for key, psnr in PSNRS.items():
+            psnr = np.array(psnr)
+            print(f"{key} PSNR_max: {np.max(psnr)}", file=file)
+            for i in range(psnr.shape[1]):
+                axs[i].plot(range(psnr.shape[0]), psnr[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('psnr')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/psnrs.png')
+
+        fig, axs = plt.subplots(1, 3, constrained_layout=True)
+        labels = ["ssim_corrupted", "ssim_gt", "ssim_gt_sm"]
+        for key, ssim in SSIMS.items():
+            ssim = np.array(ssim)
+            print(f"{key} SSIM_max: {np.max(ssim)}", file=file)
+            for i in range(ssim.shape[1]):
+                axs[i].plot(range(ssim.shape[0]), ssim[:, i], label=key)
+                axs[i].set_title(labels[i])
+                axs[i].set_xlabel('iteration')
+                axs[i].set_ylabel('ssim')
+                axs[i].legend()
+        plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
     file.close()
 
@@ -2297,41 +2911,63 @@ def find_candidates(gp, X_, samples, acq_fn='ei'):
     return candidates, expected_improvement, acq
 
 
-def normalize_X(X_unnorm, x1_logbounds, x2_logbounds):
+def normalize_X(X_unnorm, beta_logbounds, tau_logbounds):
     X_norm = X_unnorm.clone().log10()
-    X_norm[:, 0] -= x1_logbounds[0]
-    X_norm[:, 0] /= (x1_logbounds[1] - x1_logbounds[0])
+    X_norm[:, 0] -= beta_logbounds[0]
+    X_norm[:, 0] /= (beta_logbounds[1] - beta_logbounds[0])
 
-    X_norm[:, 1] -= x2_logbounds[0]
-    X_norm[:, 1] /= (x2_logbounds[1] - x2_logbounds[0])
+    X_norm[:, 1] -= tau_logbounds[0]
+    X_norm[:, 1] /= (tau_logbounds[1] - tau_logbounds[0])
 
     return X_norm
 
 
-def unnormalize_X(X_norm, x1_logbounds, x2_logbounds):
+def unnormalize_X(X_norm, beta_logbounds, tau_logbounds):
     X_unnorm = X_norm.clone()
-    X_unnorm[:, 0] *= (x1_logbounds[1] - x1_logbounds[0])
-    X_unnorm[:, 0] += x1_logbounds[0]
+    X_unnorm[:, 0] *= (beta_logbounds[1] - beta_logbounds[0])
+    X_unnorm[:, 0] += beta_logbounds[0]
 
-    X_unnorm[:, 1] *= (x2_logbounds[1] - x2_logbounds[0])
-    X_unnorm[:, 1] += x2_logbounds[0]
+    X_unnorm[:, 1] *= (tau_logbounds[1] - tau_logbounds[0])
+    X_unnorm[:, 1] += tau_logbounds[0]
 
     return torch.pow(10, X_unnorm)
 
 
-def f(task, bayes, idx, queue, candidate, device, params):
-    if task == "denoising": task = "den"
-    elif task == "inpainting": task = "inp"
-    elif task == "super-resolution": task = "sr"
-    else: assert False
-    if bayes == "mfvi": bo_candidates = {"temp": candidate[0], "sigma": candidate[1]}
-    elif bayes == "mcd": bo_candidates = {"dropout_p": candidate[0], "weight_decay": candidate[1]}
-    elif bayes == "sgld": bo_candidates = {"gamma": candidate[0], "weight_decay": candidate[1]}
-    else: assert False
-    _run = globals()[f"run_{task}_{bayes}"]
+def f(task, bayesian_technique, idx, queue, candidate, device, params):
+    if bayesian_technique == "mfvi":
+        if task == "denoising":
+            _run = run_den_mfvi
+        elif task == "super-resolution":
+            _run = run_sr_mfvi
+        elif task == "inpainting":
+            _run = run_inp_mfvi
+        else:
+            assert False
+        res = _run(temp=candidate[0], sigma=candidate[1], index=idx, device=device, **params)
+    elif bayesian_technique == "sgld":
+        if task == "denoising":
+            _run = run_den_sgld
+        elif task == "super-resolution":
+            _run = run_sr_sgld
+        elif task == "inpainting":
+            _run = run_inp_sgld
+        else:
+            assert False
+        res = _run(lr=candidate[0], weight_decay=candidate[1], index=idx, device=device, **params)
+    elif bayesian_technique == "mcd":
+        if task == "denoising":
+            _run = run_den_mcd
+        elif task == "super-resolution":
+            _run = run_sr_mcd
+        elif task == "inpainting":
+            _run = run_inp_mcd
+        else:
+            assert False
+        res = _run(dropout_p=candidate[0], weight_decay=candidate[1], index=idx, device=device, **params)
+    else:
+        assert False
 
-    res = _run(index=idx, device=device, **bo_candidates, **params)
-
+              # img=1, seed=1, num_iter=50, lr=2e-3, input_depth=16, save=True, save_path='./bo_logs')
     queue.put((candidate, res))
 
 
@@ -2340,7 +2976,7 @@ def bo(
         bayes: str,
         bo_params: Dict[str, List[float]],
         run_params: Dict,
-        bo_out_path: str = './bo_results_sgld_inp',
+        bo_out_path: str = './bo_results',
 ) -> None:
 
     mp.set_start_method('spawn')
@@ -2386,7 +3022,7 @@ def bo(
             y_run.append(res)
 
         print()
-        print(f"{list(bo_params.keys())[0]}      {list(bo_params.keys())[1]}       psnr")
+        print("beta      tau       psnr")
         for c, y in zip(candidates_run, y_run):
             print(f"{c[0]:.6f}  {c[1]:.6f}  {y:.6f}")
 
