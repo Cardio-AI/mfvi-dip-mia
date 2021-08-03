@@ -50,6 +50,6 @@ class FastRadonTransform(torch.nn.Module):
             image.expand(self.theta.size(0), -1, -1, -1),
             self.grid,
             mode='bilinear', padding_mode='zeros', align_corners=False)
-        radon_image = img_r.sum(2, keepdims=True).permute(1, 2, 0, 3)
+        radon_image = img_r.sum(2, keepdims=True).permute(2, 1, 0, 3)
 
         return radon_image
