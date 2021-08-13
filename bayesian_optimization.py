@@ -142,6 +142,631 @@ def plot_results(
     plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
 
+def run_ct_mfvi(
+        img: int = 0,
+        imsize: Tuple[int] = (256, 256),
+        p_sigma: float = 0.1,
+        num_iter: int = 5000,
+        lr: float = 3e-4,
+        temp: float = 4e-6,
+        sigma: float = 0.01,
+        input_depth: int = 16,
+        downsampler: nn.Module = None,
+        mask: torch.Tensor = torch.tensor([1]),
+        device: torch.device = torch.device('cpu'),
+        index: int = 0,
+        seed: int = 42,
+        show_every: int = 100,
+        plot: bool = True,
+        save: bool = True,
+        save_path: str = '../logs',
+        *args,
+        **kwargs
+) -> float:
+    from radon import FastRadonTransform
+
+    timestamp = str(time.time())
+    Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'w') as file:
+        for key, val in locals().items():
+            print(key, '=', val, file=file)
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.benchmark = True
+
+    if img == 0:
+        from skimage.data import brain
+
+        img_np = brain()[4][None,] / (2 ** 16)
+        imsize = (256, 256)
+    else:
+        assert False
+
+    if plot:
+        q = plot_image_grid([img_np], 4, 6)
+        out_pil = np_to_pil(q)
+        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
+
+    INPUT = 'noise'
+    OPT_OVER = 'net'  # 'net,input'
+
+    reg_noise_std = 1. / 10.
+    LR = lr
+
+    num_iter += 1
+    exp_weight = 0.99
+
+    mse = torch.nn.MSELoss()
+
+    img_torch = np_to_torch(img_np).float().to(device)
+
+    MSE_CORRUPTED = {}
+    MSE_GT = {}
+    UNCERTS_EPI = {}
+    UNCERTS_ALE = {}
+    PSNRS = {}
+    SSIMS = {}
+
+    figsize = 4
+
+    weight_decay = 0
+
+    net_input = get_noise(input_depth, INPUT, imsize).to(device).detach()
+
+    net_input_saved = net_input.detach().clone()
+    noise = net_input.detach().clone()
+
+    out_avg = None
+
+    mc_iter = 25
+    mc_ring_buffer_epi = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
+    mc_ring_buffer_ale = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
+
+    NET_TYPE = 'skip'
+
+    skip_n33d = [16, 32, 64, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128]
+    skip_n11 = 4
+    num_scales = 5
+    upsample_mode = 'bilinear'
+    pad = 'reflection'
+
+    net = get_net(input_depth, NET_TYPE, pad,
+                  skip_n33d=skip_n33d,
+                  skip_n33u=skip_n33u,
+                  skip_n11=skip_n11,
+                  num_scales=num_scales,
+                  n_channels=1,
+                  upsample_mode=upsample_mode).to(device)
+
+    prior = {'mu': 0.0,
+             'sigma': sigma}
+
+    net = MeanFieldVI(net,
+                      prior=prior,
+                      replace_layers='all',
+                      device=device,
+                      reparam='')
+
+    theta = torch.arange(0, 180., step=4.).to(device)
+    forward_radon = FastRadonTransform(img_torch.size(), theta)
+    img_radon = forward_radon(img_torch).to(device).detach()
+
+    mse_corrupted = np.zeros(num_iter)
+    mse_gt = np.zeros(num_iter)
+
+    uncerts_shape = (num_iter // show_every + 1, 1) + imsize
+    uncerts_epi = np.zeros(uncerts_shape)
+    uncerts_ale = np.zeros(uncerts_shape)
+
+    psnrs_shape = (num_iter, 3)
+    psnrs = np.zeros(psnrs_shape)
+    ssims = np.zeros(psnrs_shape)
+
+    img_mean = 0
+    sample_count = 0
+    psnr_corrupted_last = 0
+
+    parameters = get_params(OPT_OVER, net, net_input)
+    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
+
+    pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
+    for i in pbar:
+        optimizer.zero_grad()
+
+        if reg_noise_std > 0:
+            net_input = net_input_saved + (noise.normal_() * reg_noise_std)
+
+        out = net(net_input)
+
+        nll = torch.nn.functional.mse_loss(forward_radon(out), img_radon)
+        kl = net.kl()
+        loss = nll + temp * kl
+        loss.backward()
+
+        if not torch.isnan(loss):
+            optimizer.step()
+
+        # Smoothing
+        if out_avg is None:
+            out_avg = out.detach()
+        else:
+            out_avg = out_avg * exp_weight + out.detach() * (1 - exp_weight)
+
+        with torch.no_grad():
+            if downsampler is not None:
+                _out_avg = downsampler(out_avg)
+            else:
+                _out_avg = out_avg
+            mse_corrupted[i] = mse(_out_avg[:, :1], img_torch).item()
+            mse_gt[i] = mse_corrupted[i]
+
+            _out = out.detach()[:, :1].clip(0, 1)
+            _out_avg = out_avg.detach()[:, :1].clip(0, 1)
+
+            mc_ring_buffer_epi[i % mc_iter] = _out[0]
+
+            psnr_corrupted = peak_signal_noise_ratio(img_torch, _out)
+            psnr_gt = psnr_corrupted
+            psnr_gt_sm = peak_signal_noise_ratio(img_torch, _out_avg)
+
+            ssim_corrupted = structural_similarity(img_torch, _out)
+            ssim_gt = ssim_corrupted
+            ssim_gt_sm = structural_similarity(img_torch, _out_avg)
+
+        psnrs[i] = [psnr_corrupted, psnr_gt, psnr_gt_sm]
+        ssims[i] = [ssim_corrupted, ssim_gt, ssim_gt_sm]
+
+        if i % show_every == 0:
+            pbar.set_description(f'MSE: {mse_corrupted[i].item():.4f} | PSNR_noisy: {psnr_corrupted:7.4f} \
+| PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
+
+            _out_var = torch.var(mc_ring_buffer_epi, dim=0)
+            uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+
+            if plot:
+                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mfvi.png', "MSE MFVI")
+
+    MSE_CORRUPTED['mfvi'] = mse_corrupted
+    MSE_GT['mfvi'] = mse_gt
+    UNCERTS_EPI['mfvi'] = uncerts_epi
+    UNCERTS_ALE['mfvi'] = uncerts_ale
+    PSNRS['mfvi'] = psnrs
+    SSIMS['mfvi'] = ssims
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'a') as file:
+        if plot:
+            plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+            np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+
+    # save stuff for plotting
+    if save:
+        np.savez(f"{save_path}/{timestamp}/save.npz",
+                 noisy_img=img_radon.cpu().numpy(), mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+
+    plt.close('all')
+
+    return PSNRS['mfvi'][-1, 2]
+
+
+def run_ct_mcd(
+        img: int = 0,
+        imsize: Tuple[int] = (256, 256),
+        p_sigma: float = 0.1,
+        num_iter: int = 5000,
+        lr: float = 3e-4,
+        dropout_p: float = 0.3,
+        weight_decay: float = 3e-4,
+        input_depth: int = 16,
+        downsampler: nn.Module = None,
+        mask: torch.Tensor = torch.tensor([1]),
+        device: torch.device = torch.device('cpu'),
+        index: int = 0,
+        seed: int = 42,
+        show_every: int = 100,
+        plot: bool = True,
+        save: bool = True,
+        save_path: str = '../logs',
+        *args,
+        **kwargs
+) -> float:
+    from radon import FastRadonTransform
+
+    timestamp = str(time.time())
+    Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'w') as file:
+        for key, val in locals().items():
+            print(key, '=', val, file=file)
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.benchmark = True
+
+    if img == 0:
+        from skimage.data import brain
+
+        img_np = brain()[4][None,] / (2 ** 16)
+        imsize = (256, 256)
+    else:
+        assert False
+
+    if plot:
+        q = plot_image_grid([img_np], 4, 6)
+        out_pil = np_to_pil(q)
+        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
+
+    INPUT = 'noise'
+    OPT_OVER = 'net'  # 'net,input'
+
+    reg_noise_std = 1. / 10.
+    LR = lr
+
+    num_iter += 1
+    exp_weight = 0.99
+
+    mse = torch.nn.MSELoss()
+
+    img_torch = np_to_torch(img_np).float().to(device)
+
+    MSE_CORRUPTED = {}
+    MSE_GT = {}
+    UNCERTS_EPI = {}
+    UNCERTS_ALE = {}
+    PSNRS = {}
+    SSIMS = {}
+
+    figsize = 4
+
+    weight_decay = 0
+
+    net_input = get_noise(input_depth, INPUT, imsize).to(device).detach()
+
+    net_input_saved = net_input.detach().clone()
+    noise = net_input.detach().clone()
+
+    out_avg = None
+
+    mc_iter = 25
+    mc_ring_buffer_epi = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
+    mc_ring_buffer_ale = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
+
+    NET_TYPE = 'skip'
+
+    skip_n33d = [16, 32, 64, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128]
+    skip_n11 = 4
+    num_scales = 5
+    upsample_mode = 'bilinear'
+    pad = 'reflection'
+
+    dropout_mode_down = '2d'
+    dropout_mode_up = '2d'
+    dropout_mode_skip = 'None'
+    dropout_mode_output = 'None'
+
+    net = get_net(input_depth, NET_TYPE, pad,
+                  skip_n33d=skip_n33d,
+                  skip_n33u=skip_n33u,
+                  skip_n11=skip_n11,
+                  num_scales=num_scales,
+                  n_channels=1,
+                  upsample_mode=upsample_mode,
+                  dropout_mode_down=dropout_mode_down,
+                  dropout_p_down=dropout_p,
+                  dropout_mode_up=dropout_mode_up,
+                  dropout_p_up=dropout_p,
+                  dropout_mode_skip=dropout_mode_skip,
+                  dropout_p_skip=dropout_p,
+                  dropout_mode_output=dropout_mode_output,
+                  dropout_p_output=dropout_p).to(device)
+
+    theta = torch.arange(0, 180., step=4.).to(device)
+    forward_radon = FastRadonTransform(img_torch.size(), theta)
+    img_radon = forward_radon(img_torch).to(device).detach()
+
+    mse_corrupted = np.zeros(num_iter)
+    mse_gt = np.zeros(num_iter)
+
+    uncerts_shape = (num_iter // show_every + 1, 1) + imsize
+    uncerts_epi = np.zeros(uncerts_shape)
+    uncerts_ale = np.zeros(uncerts_shape)
+
+    psnrs_shape = (num_iter, 3)
+    psnrs = np.zeros(psnrs_shape)
+    ssims = np.zeros(psnrs_shape)
+
+    img_mean = 0
+    sample_count = 0
+    psnr_corrupted_last = 0
+
+    parameters = get_params(OPT_OVER, net, net_input)
+    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
+
+    pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
+    for i in pbar:
+        optimizer.zero_grad()
+
+        if reg_noise_std > 0:
+            net_input = net_input_saved + (noise.normal_() * reg_noise_std)
+
+        out = net(net_input)
+
+        loss = torch.nn.functional.mse_loss(forward_radon(out), img_radon)
+        loss.backward()
+
+        if not torch.isnan(loss):
+            optimizer.step()
+
+        # Smoothing
+        if out_avg is None:
+            out_avg = out.detach()
+        else:
+            out_avg = out_avg * exp_weight + out.detach() * (1 - exp_weight)
+
+        with torch.no_grad():
+            if downsampler is not None:
+                _out_avg = downsampler(out_avg)
+            else:
+                _out_avg = out_avg
+            mse_corrupted[i] = mse(_out_avg[:, :1], img_torch).item()
+            mse_gt[i] = mse_corrupted[i]
+
+            _out = out.detach()[:, :1].clip(0, 1)
+            _out_avg = out_avg.detach()[:, :1].clip(0, 1)
+
+            mc_ring_buffer_epi[i % mc_iter] = _out[0]
+
+            psnr_corrupted = peak_signal_noise_ratio(img_torch, _out)
+            psnr_gt = psnr_corrupted
+            psnr_gt_sm = peak_signal_noise_ratio(img_torch, _out_avg)
+
+            ssim_corrupted = structural_similarity(img_torch, _out)
+            ssim_gt = ssim_corrupted
+            ssim_gt_sm = structural_similarity(img_torch, _out_avg)
+
+        psnrs[i] = [psnr_corrupted, psnr_gt, psnr_gt_sm]
+        ssims[i] = [ssim_corrupted, ssim_gt, ssim_gt_sm]
+
+        if i % show_every == 0:
+            pbar.set_description(f'MSE: {mse_corrupted[i].item():.4f} | PSNR_noisy: {psnr_corrupted:7.4f} \
+| PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
+
+            _out_var = torch.var(mc_ring_buffer_epi, dim=0)
+            uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+
+            if plot:
+                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mcd.png', "MSE MC Dropout")
+
+    MSE_CORRUPTED['mcd'] = mse_corrupted
+    MSE_GT['mcd'] = mse_gt
+    UNCERTS_EPI['mcd'] = uncerts_epi
+    UNCERTS_ALE['mcd'] = uncerts_ale
+    PSNRS['mcd'] = psnrs
+    SSIMS['mcd'] = ssims
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'a') as file:
+        if plot:
+            plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+            np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+
+    # save stuff for plotting
+    if save:
+        np.savez(f"{save_path}/{timestamp}/save.npz",
+                 noisy_img=img_radon.cpu().numpy(), mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+
+    plt.close('all')
+
+    return PSNRS['mcd'][-1, 2]
+
+
+def run_ct_sgld(
+        img: int = 0,
+        imsize: Tuple[int] = (256, 256),
+        p_sigma: float = 0.1,
+        num_iter: int = 5000,
+        gamma: float = 0.996,
+        lr: float = 1e-3,
+        weight_decay: float = 5e-8,
+        input_depth: int = 16,
+        downsampler: nn.Module = None,
+        mask: torch.Tensor = torch.tensor([1]),
+        device: torch.device = torch.device('cpu'),
+        index: int = 0,
+        seed: int = 42,
+        show_every: int = 100,
+        plot: bool = True,
+        save: bool = True,
+        save_path: str = '../logs',
+        *args,
+        **kwargs
+) -> float:
+    from radon import FastRadonTransform
+
+    timestamp = str(time.time())
+    Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'w') as file:
+        for key, val in locals().items():
+            print(key, '=', val, file=file)
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.benchmark = True
+
+    if img == 0:
+        from skimage.data import brain
+
+        img_np = brain()[4][None,] / (2 ** 16)
+        imsize = (256, 256)
+    else:
+        assert False
+
+    if plot:
+        q = plot_image_grid([img_np], 4, 6)
+        out_pil = np_to_pil(q)
+        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
+
+    INPUT = 'noise'
+    OPT_OVER = 'net'  # 'net,input'
+
+    reg_noise_std = 1. / 10.
+    LR = lr
+
+    num_iter += 1
+    exp_weight = 0.99
+
+    mse = torch.nn.MSELoss()
+
+    img_torch = np_to_torch(img_np).float().to(device)
+
+    MSE_CORRUPTED = {}
+    MSE_GT = {}
+    UNCERTS_EPI = {}
+    UNCERTS_ALE = {}
+    PSNRS = {}
+    SSIMS = {}
+
+    figsize = 4
+
+    weight_decay = 0
+
+    net_input = get_noise(input_depth, INPUT, imsize).to(device).detach()
+
+    net_input_saved = net_input.detach().clone()
+    noise = net_input.detach().clone()
+
+    out_avg = None
+
+    mc_iter = 25
+    mc_ring_buffer_epi = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
+    mc_ring_buffer_ale = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
+
+    NET_TYPE = 'skip'
+
+    skip_n33d = [16, 32, 64, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128]
+    skip_n11 = 4
+    num_scales = 5
+    upsample_mode = 'bilinear'
+    pad = 'reflection'
+
+    net = get_net(input_depth, NET_TYPE, pad,
+                  skip_n33d=skip_n33d,
+                  skip_n33u=skip_n33u,
+                  skip_n11=skip_n11,
+                  num_scales=num_scales,
+                  n_channels=1,
+                  upsample_mode=upsample_mode).to(device)
+
+    theta = torch.arange(0, 180., step=4.).to(device)
+    forward_radon = FastRadonTransform(img_torch.size(), theta)
+    img_radon = forward_radon(img_torch).to(device).detach()
+
+    mse_corrupted = np.zeros(num_iter)
+    mse_gt = np.zeros(num_iter)
+
+    uncerts_shape = (num_iter // show_every + 1, 1) + imsize
+    uncerts_epi = np.zeros(uncerts_shape)
+    uncerts_ale = np.zeros(uncerts_shape)
+
+    psnrs_shape = (num_iter, 3)
+    psnrs = np.zeros(psnrs_shape)
+    ssims = np.zeros(psnrs_shape)
+
+    img_mean = 0
+    sample_count = 0
+    psnr_corrupted_last = 0
+
+    parameters = get_params(OPT_OVER, net, net_input)
+    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+
+    param_noise_sigma = 2
+
+    pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
+    for i in pbar:
+        optimizer.zero_grad()
+        add_noise(net, param_noise_sigma, LR)
+
+        if reg_noise_std > 0:
+            net_input = net_input_saved + (noise.normal_() * reg_noise_std)
+
+        out = net(net_input)
+
+        loss = torch.nn.functional.mse_loss(forward_radon(out), img_radon)
+        loss.backward()
+
+        if not torch.isnan(loss):
+            optimizer.step()
+
+        # Smoothing
+        if out_avg is None:
+            out_avg = out.detach()
+        else:
+            out_avg = out_avg * exp_weight + out.detach() * (1 - exp_weight)
+
+        with torch.no_grad():
+            if downsampler is not None:
+                _out_avg = downsampler(out_avg)
+            else:
+                _out_avg = out_avg
+            mse_corrupted[i] = mse(_out_avg[:, :1], img_torch).item()
+            mse_gt[i] = mse_corrupted[i]
+
+            _out = out.detach()[:, :1].clip(0, 1)
+            _out_avg = out_avg.detach()[:, :1].clip(0, 1)
+
+            mc_ring_buffer_epi[i % mc_iter] = _out[0]
+
+            psnr_corrupted = peak_signal_noise_ratio(img_torch, _out)
+            psnr_gt = psnr_corrupted
+            psnr_gt_sm = peak_signal_noise_ratio(img_torch, _out_avg)
+
+            ssim_corrupted = structural_similarity(img_torch, _out)
+            ssim_gt = ssim_corrupted
+            ssim_gt_sm = structural_similarity(img_torch, _out_avg)
+
+        psnrs[i] = [psnr_corrupted, psnr_gt, psnr_gt_sm]
+        ssims[i] = [ssim_corrupted, ssim_gt, ssim_gt_sm]
+
+        if i % show_every == 0:
+            pbar.set_description(f'MSE: {mse_corrupted[i].item():.4f} | PSNR_noisy: {psnr_corrupted:7.4f} \
+| PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
+
+            _out_var = torch.var(mc_ring_buffer_epi, dim=0)
+            uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+
+            if plot:
+                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_sgld.png', "MSE SGLD")
+
+    MSE_CORRUPTED['sgld'] = mse_corrupted
+    MSE_GT['sgld'] = mse_gt
+    UNCERTS_EPI['sgld'] = uncerts_epi
+    UNCERTS_ALE['sgld'] = uncerts_ale
+    PSNRS['sgld'] = psnrs
+    SSIMS['sgld'] = ssims
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'a') as file:
+        if plot:
+            plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+            np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+
+    # save stuff for plotting
+    if save:
+        np.savez(f"{save_path}/{timestamp}/save.npz",
+                 noisy_img=img_radon.cpu().numpy(), mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+
+    plt.close('all')
+
+    return PSNRS['sgld'][-1, 2]
+
+
 def run_den_mfvi(
         img: int = 0,
         imsize: Tuple[int] = (256, 256),
@@ -2323,6 +2948,7 @@ def f(task, bayes, idx, queue, candidate, device, params):
     if task == "denoising": task = "den"
     elif task == "inpainting": task = "inp"
     elif task == "super-resolution": task = "sr"
+    elif task == "ct": pass
     else: assert False
     if bayes == "mfvi": bo_candidates = {"temp": candidate[0], "sigma": candidate[1]}
     elif bayes == "mcd": bo_candidates = {"dropout_p": candidate[0], "weight_decay": candidate[1]}
@@ -2339,13 +2965,13 @@ def bo(
         task: str,
         bayes: str,
         bo_params: Dict[str, List[float]],
-        run_params: Dict,
-        bo_out_path: str = './bo_results_sgld_inp',
+        run_params: Dict
 ) -> None:
 
     mp.set_start_method('spawn')
 
-    # bo_out_path = './bo_results'
+    bo_out_path = run_params['bo_results_path']
+    del run_params['bo_results_path']
     Path(bo_out_path).mkdir(parents=True, exist_ok=True)
 
     device = torch.device("cuda:0")
@@ -2357,14 +2983,14 @@ def bo(
 
     p1_logbounds, p2_logbounds = [v["logbounds"] for p, v in bo_params.items()]
 
-    X_lr = torch.logspace(*p1_logbounds, 100, dtype=torch.double).to(device)
-    X_wd = torch.logspace(*p2_logbounds, 100, dtype=torch.double).to(device)
+    X_lr = torch.logspace(*p1_logbounds, 100, dtype=torch.double).to(device)  # base 10
+    X_wd = torch.logspace(*p2_logbounds, 100, dtype=torch.double).to(device)  # base 10
     XX_lr, XX_wd = torch.meshgrid(X_lr, X_wd)
     X_ = torch.stack([XX_lr.reshape(-1), XX_wd.reshape(-1)]).transpose(1, 0)
 
     candidates = list(itertools.product(*[v["candidates"] for p, v in bo_params.items()]))
 
-    for runs_num in range(100):
+    for runs_num in range(20):
 
         plt.close('all')
 
@@ -2384,6 +3010,12 @@ def bo(
             candidate, res = queue.get()
             candidates_run.append(candidate)
             y_run.append(res)
+
+        # filter nans
+        for i, val in enumerate(y_run):
+            if np.isnan(val):
+                del candidates_run[i]
+        y_run = [x for x in y_run if not np.isnan(x)]
 
         print()
         print(f"{list(bo_params.keys())[0]}      {list(bo_params.keys())[1]}       psnr")
@@ -2504,7 +3136,12 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     filter_nans = lambda d: {k: v for k, v in d.items() if v is not np.nan}
-    config = pd.read_json(args.config).to_dict(into=OrderedDict)
+    try:
+        config = pd.read_json(args.config).to_dict(into=OrderedDict)
+    except:
+        print("Error reading JSON")
+        exit()
+
     bo_params = filter_nans(config["bo_params"])
     run_params = filter_nans(config["run_params"])
 
