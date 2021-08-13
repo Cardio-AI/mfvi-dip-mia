@@ -1280,7 +1280,7 @@ def run_sr_sgld(
         imsize: Tuple[int] = (256, 256),
         factor: int = 4,
         num_iter: int = 5000,
-        gamma: flaot = 0.996,
+        gamma: float = 0.996,
         lr: float = 3e-4,
         weight_decay: float = 1e-4,
         input_depth: int = 16,

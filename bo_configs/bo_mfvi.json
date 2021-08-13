@@ -20,6 +20,6 @@
     "plot": true,
     "save": true,
     "devices": ["cuda:0", "cuda:1"],
-    "save_path": "./bo_logs_inp2"
+    "save_path": "/media/laves/bo_logs_mfvi_den"
   }
 }
