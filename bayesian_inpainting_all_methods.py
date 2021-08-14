@@ -108,49 +108,7 @@ def main(
     #     assert False
 
     if plot:
-        q = plot_image_grid([img_np, img_np * img_mask_np], 4, 6)
-        out_pil = np_to_pil(q)
-        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
-
-    # if fname == 'data/NORMAL-4951060-8.jpeg':
-
-    # Add Gaussian noise to simulate speckle
-    img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-    img_np = pil_to_np(img_pil)
-    p_sigma = 0.1
-    img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-
-    # elif fname in ['data/BACTERIA-1351146-0006.png', 'data/VIRUS-9815549-0001.png']:
-    #
-    #     # Add Poisson noise to simulate low dose X-ray
-    #     img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-    #     img_np = pil_to_np(img_pil)
-    #     #img_noisy_pil, img_noisy_np = get_noisy_image_poisson(img_np, p_lambda)
-    #     # for lam > 20, poisson can be approximated with Gaussian
-    #     p_sigma = 0.1
-    #     img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-    #
-    # elif fname == 'data/081_HC.png':
-    #
-    #     # Add Gaussian noise to simulate speckle
-    #     img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-    #     img_np = pil_to_np(img_pil)
-    #     p_sigma = 0.1
-    #     img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-    #
-    # elif fname == 'data/CNV-9997680-30.png':
-    #
-    #     # Add Gaussian noise to simulate speckle
-    #     img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-    #     img_np = pil_to_np(img_pil)
-    #     p_sigma = 0.1
-    #     img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-    #
-    # else:
-    #     assert False
-
-    if plot:
-        q = plot_image_grid([img_np, img_noisy_np], 4, 6)
+        q = plot_image_grid([img_np, img_np * img_mask_np, img_mask_np], 4, 6)
         out_pil = np_to_pil(q)
         out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
@@ -168,7 +126,7 @@ def main(
     mse = torch.nn.MSELoss()
 
     img_torch = np_to_torch(img_np).to(device)
-    mask_torch = np_to_torch(img_mask_np)
+    mask_torch = np_to_torch(img_mask_np).to(device)
 
     MSE_MASKED = {}
     MSE_GT = {}
@@ -213,7 +171,7 @@ def main(
                   skip_n33u=skip_n33u,
                   skip_n11=skip_n11,
                   num_scales=num_scales,
-                  n_channels=1,
+                  n_channels=4,
                   upsample_mode=upsample_mode,
                   dropout_mode_down=dropout_mode_down,
                   dropout_p_down=dropout_p_down,
@@ -343,7 +301,7 @@ def main(
                   skip_n33u=skip_n33u,
                   skip_n11=skip_n11,
                   num_scales=num_scales,
-                  n_channels=1,
+                  n_channels=4,
                   upsample_mode=upsample_mode,
                   dropout_mode_down=dropout_mode_down,
                   dropout_p_down=dropout_p_down,
@@ -407,15 +365,17 @@ def main(
                 mse_gt[i] = mse(out_avg[:, :3], img_torch).item()
                 mse_masked[i] = mse(out_avg[:, :3] * mask_torch, img_torch * mask_torch).item()
 
-                _out = out.detach()[:, :3].clip(0, 1)
-                _out_avg = out_avg.detach()[:, :3].clip(0, 1)
+            _out = out.detach()[:, :3].clip(0, 1)
+            _out_avg = out_avg.detach()[:, :3].clip(0, 1)
 
-                psnr_masked = peak_signal_noise_ratio(img_torch, _out)
-                psnr_gt = peak_signal_noise_ratio(img_torch * mask_torch, _out * mask_torch)
-                psnr_gt_sm = peak_signal_noise_ratio(img_torch * mask_torch, _out_avg * mask_torch)
-                ssim_masked = structural_similarity(img_torch, _out)
-                ssim_gt = structural_similarity(img_torch * mask_torch, _out * mask_torch)
-                ssim_gt_sm = structural_similarity(img_torch * mask_torch, _out_avg * mask_torch)
+            mc_ring_buffer[i % mc_iter] = _out#[0]
+
+            psnr_masked = peak_signal_noise_ratio(img_torch, _out)
+            psnr_gt = peak_signal_noise_ratio(img_torch * mask_torch, _out * mask_torch)
+            psnr_gt_sm = peak_signal_noise_ratio(img_torch * mask_torch, _out_avg * mask_torch)
+            ssim_masked = structural_similarity(img_torch, _out)
+            ssim_gt = structural_similarity(img_torch * mask_torch, _out * mask_torch)
+            ssim_gt_sm = structural_similarity(img_torch * mask_torch, _out_avg * mask_torch)
 
             psnrs[i] = [psnr_masked, psnr_gt, psnr_gt_sm]
             ssims[i] = [ssim_masked, ssim_gt, ssim_gt_sm]
@@ -425,6 +385,8 @@ def main(
                     f'MSE: {mse_masked[i].item():.4f} | PSNR: {psnr_masked:7.4f} | PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
 
                 recons[i // show_every] = _out_avg.cpu().numpy()[0]
+                _out_var = torch.var(mc_ring_buffer, dim=0)
+                uncerts_epi[i // show_every] = _out_var.cpu().numpy()
 
                 if plot:
                     fig, ax0 = plt.subplots()
@@ -444,7 +406,7 @@ def main(
                     fig.savefig(f'{save_path}/{timestamp}/loss_sgld.png')
                     plt.close('all')
 
-    MSE_MASKED['sgld'] = MSE_MASKED
+    MSE_MASKED['sgld'] = mse_masked
     MSE_GT['sgld'] = mse_gt
     RECONS['sgld'] = recons
     UNCERTS_EPI['sgld'] = uncerts_epi
@@ -484,7 +446,7 @@ def main(
     out_avg = None
 
     mc_iter = 25
-    mc_ring_buffer_epi = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
+    mc_ring_buffer_epi = torch.zeros((mc_iter, 3) + imsize)  # saves the last mc_iter reconstructions
     mc_ring_buffer_ale = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
 
     net = get_net(input_depth, NET_TYPE, pad,
@@ -492,7 +454,7 @@ def main(
                   skip_n33u=skip_n33u,
                   skip_n11=skip_n11,
                   num_scales=num_scales,
-                  n_channels=2,
+                  n_channels=4,
                   upsample_mode=upsample_mode,
                   dropout_mode_down=dropout_mode_down,
                   dropout_p_down=dropout_p,
@@ -545,15 +507,19 @@ def main(
             mse_gt[i] = mse(out_avg[:, :3], img_torch).item()
             mse_masked[i] = mse(out_avg[:, :3] * mask_torch, img_torch * mask_torch).item()
 
-            _out = out.detach()[:, :3].clip(0, 1)
-            _out_avg = out_avg.detach()[:, :3].clip(0, 1)
+        _out = out.detach()[:, :3].clip(0, 1)
+        _out_avg = out_avg.detach()[:, :3].clip(0, 1)
+        _out_ale = out.detach()[:, 3:].clip(0, 1)
 
-            psnr_masked = peak_signal_noise_ratio(img_torch, _out)
-            psnr_gt = peak_signal_noise_ratio(img_torch * mask_torch, _out * mask_torch)
-            psnr_gt_sm = peak_signal_noise_ratio(img_torch * mask_torch, _out_avg * mask_torch)
-            ssim_masked = structural_similarity(img_torch, _out)
-            ssim_gt = structural_similarity(img_torch * mask_torch, _out * mask_torch)
-            ssim_gt_sm = structural_similarity(img_torch * mask_torch, _out_avg * mask_torch)
+        mc_ring_buffer_epi[i % mc_iter] = _out#[0]
+        mc_ring_buffer_ale[i % mc_iter] = _out_ale[0]
+
+        psnr_masked = peak_signal_noise_ratio(img_torch, _out)
+        psnr_gt = peak_signal_noise_ratio(img_torch * mask_torch, _out * mask_torch)
+        psnr_gt_sm = peak_signal_noise_ratio(img_torch * mask_torch, _out_avg * mask_torch)
+        ssim_masked = structural_similarity(img_torch, _out)
+        ssim_gt = structural_similarity(img_torch * mask_torch, _out * mask_torch)
+        ssim_gt_sm = structural_similarity(img_torch * mask_torch, _out_avg * mask_torch)
 
         psnrs[i] = [psnr_masked, psnr_gt, psnr_gt_sm]
         ssims[i] = [ssim_masked, ssim_gt, ssim_gt_sm]
@@ -563,6 +529,11 @@ def main(
                 f'MSE: {mse_masked[i].item():.4f} | PSNR: {psnr_masked:7.4f} | PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
 
             recons[i // show_every] = _out_avg.cpu().numpy()[0]
+
+            _out_var = torch.var(mc_ring_buffer_epi, dim=0)
+            _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
+            uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+            uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
                 fig, ax0 = plt.subplots()
@@ -627,7 +598,7 @@ def main(
     out_avg = None
 
     mc_iter = 25
-    mc_ring_buffer_epi = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
+    mc_ring_buffer_epi = torch.zeros((mc_iter, 3) + imsize)  # saves the last mc_iter reconstructions
     mc_ring_buffer_ale = torch.zeros((mc_iter,) + imsize)  # saves the last mc_iter reconstructions
 
     net = get_net(input_depth, NET_TYPE, pad,
@@ -635,7 +606,7 @@ def main(
                   skip_n33u=skip_n33u,
                   skip_n11=skip_n11,
                   num_scales=num_scales,
-                  n_channels=2,
+                  n_channels=4,
                   upsample_mode=upsample_mode,
                   dropout_mode_down=dropout_mode_down,
                   dropout_p_down=dropout_p_down,
@@ -658,8 +629,8 @@ def main(
 
     mse_masked = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
-    recons = np.zeros((num_iter // show_every + 1, 1) + imsize)
-    uncerts_epi = np.zeros((num_iter // show_every + 1, 1) + imsize)
+    recons = np.zeros((num_iter // show_every + 1, 3) + imsize)
+    uncerts_epi = np.zeros((num_iter // show_every + 1, 3) + imsize)
     uncerts_ale = np.zeros((num_iter // show_every + 1, 1) + imsize)
     psnrs = np.zeros((num_iter, 3))
     ssims = np.zeros((num_iter, 3))
@@ -698,15 +669,19 @@ def main(
             mse_gt[i] = mse(out_avg[:, :3], img_torch).item()
             mse_masked[i] = mse(out_avg[:, :3] * mask_torch, img_torch * mask_torch).item()
 
-            _out = out.detach()[:, :3].clip(0, 1)
-            _out_avg = out_avg.detach()[:, :3].clip(0, 1)
+        _out = out.detach()[:, :3].clip(0, 1)
+        _out_avg = out_avg.detach()[:, :3].clip(0, 1)
+        _out_ale = out.detach()[:, 3:].clip(0, 1)
 
-            psnr_masked = peak_signal_noise_ratio(img_torch, _out)
-            psnr_gt = peak_signal_noise_ratio(img_torch * mask_torch, _out * mask_torch)
-            psnr_gt_sm = peak_signal_noise_ratio(img_torch * mask_torch, _out_avg * mask_torch)
-            ssim_masked = structural_similarity(img_torch, _out)
-            ssim_gt = structural_similarity(img_torch * mask_torch, _out * mask_torch)
-            ssim_gt_sm = structural_similarity(img_torch * mask_torch, _out_avg * mask_torch)
+        mc_ring_buffer_epi[i % mc_iter] = _out  # [0]
+        mc_ring_buffer_ale[i % mc_iter] = _out_ale[0]
+
+        psnr_masked = peak_signal_noise_ratio(img_torch, _out)
+        psnr_gt = peak_signal_noise_ratio(img_torch * mask_torch, _out * mask_torch)
+        psnr_gt_sm = peak_signal_noise_ratio(img_torch * mask_torch, _out_avg * mask_torch)
+        ssim_masked = structural_similarity(img_torch, _out)
+        ssim_gt = structural_similarity(img_torch * mask_torch, _out * mask_torch)
+        ssim_gt_sm = structural_similarity(img_torch * mask_torch, _out_avg * mask_torch)
 
         psnrs[i] = [psnr_masked, psnr_gt, psnr_gt_sm]
         ssims[i] = [ssim_masked, ssim_gt, ssim_gt_sm]
@@ -716,6 +691,11 @@ def main(
                 f'MSE: {mse_masked[i].item():.4f} | PSNR: {psnr_masked:7.4f} | PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
 
             recons[i // show_every] = _out_avg.cpu().numpy()[0]
+
+            _out_var = torch.var(mc_ring_buffer_epi, dim=0)
+            _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
+            uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+            uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
                 fig, ax0 = plt.subplots()
@@ -760,7 +740,6 @@ def main(
         out_pil.save(f'{save_path}/{timestamp}/uncert_ale_mfvi.png', 'PNG')
 
     ## END
-
     if plot:
         fig, ax = plt.subplots(1, 1)
         for key, loss in MSE_MASKED.items():
@@ -815,7 +794,7 @@ def main(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 noisy_img=img_noisy_np, mse_masked=MSE_MASKED, mse_gt=MSE_GT, recons=RECONS,
+                 masked_img=img_np * img_mask_np, mse_masked=MSE_MASKED, mse_gt=MSE_GT, recons=RECONS,
                  uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
         print(f"Saved results to {save_path}/{timestamp}/save.npz")
 

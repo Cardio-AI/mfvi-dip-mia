@@ -71,7 +71,7 @@ def main(
     dtype = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
     device = torch.device(f'cuda:0' if torch.cuda.is_available() else 'cpu')
 
-    imsize = (256, 256)
+    # imsize = (256, 256)
 
     timestamp = int(time.time())
     os.makedirs(f'{save_path}/{timestamp}')
@@ -112,7 +112,7 @@ def main(
     #     assert False
 
     if plot:
-        q = plot_image_grid([img_hr_np, cv2.resize(img_lr_np, img_hr_np.shape, cv2.INTER_NEAREST)], 4, 6)
+        q = plot_image_grid([img_hr_np, cv2.resize(img_lr_np[0], img_hr_np.shape[1:][::-1], cv2.INTER_NEAREST)[np.newaxis]], 4, 6)
         out_pil = np_to_pil(q)
         out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
@@ -177,7 +177,7 @@ def main(
                   skip_n33u=skip_n33u,
                   skip_n11=skip_n11,
                   num_scales=num_scales,
-                  n_channels=1,
+                  n_channels=2,
                   upsample_mode=upsample_mode,
                   dropout_mode_down=dropout_mode_down,
                   dropout_p_down=dropout_p_down,
@@ -251,7 +251,7 @@ def main(
 
         if i % show_every == 0:
             pbar.set_description(
-                f'MSE: {mse_lr[i].item():.4f} | PSNR_noisy: {psnr_lr:7.4f} | PSRN_gt: {psnr_hr:7.4f} PSNR_gt_sm: {psnr_hr_sm:7.4f}')
+                f'MSE: {mse_lr[i].item():.4f} | PSNR_lr: {psnr_lr:7.4f} | PSRN_gt: {psnr_hr:7.4f} PSNR_gt_sm: {psnr_hr_sm:7.4f}')
 
             recons[i // show_every] = _out_avg_hr.cpu().numpy()[0]
 
@@ -316,7 +316,7 @@ def main(
                   skip_n33u=skip_n33u,
                   skip_n11=skip_n11,
                   num_scales=num_scales,
-                  n_channels=1,
+                  n_channels=2,
                   upsample_mode=upsample_mode,
                   dropout_mode_down=dropout_mode_down,
                   dropout_p_down=dropout_p_down,
@@ -383,27 +383,31 @@ def main(
                 mse_hr[i] = mse(out_avg_hr[:, :1], img_hr_torch).item()
                 mse_lr[i] = mse(out_avg_lr[:, :1], img_lr_torch).item()
 
-                _out_lr = out_lr.detach()[:, :1].clip(0, 1)
-                _out_avg_lr = out_avg_lr.detach()[:, :1].clip(0, 1)
-                _out_hr = out_hr.detach()[:, :1].clip(0, 1)
-                _out_avg_hr = out_avg_hr.detach()[:, :1].clip(0, 1)
+            _out_lr = out_lr.detach()[:, :1].clip(0, 1)
+            _out_avg_lr = out_avg_lr.detach()[:, :1].clip(0, 1)
+            _out_hr = out_hr.detach()[:, :1].clip(0, 1)
+            _out_avg_hr = out_avg_hr.detach()[:, :1].clip(0, 1)
 
-                psnr_lr = peak_signal_noise_ratio(img_lr_torch, _out_lr)
-                psnr_hr = peak_signal_noise_ratio(img_hr_torch, _out_hr)
-                psnr_hr_sm = peak_signal_noise_ratio(img_hr_torch, _out_avg_hr)
+            mc_ring_buffer[i % mc_iter] = _out_hr[0]
 
-                ssim_lr = structural_similarity(img_lr_torch, _out_lr)
-                ssim_hr = structural_similarity(img_hr_torch, _out_hr)
-                ssim_hr_sm = structural_similarity(img_hr_torch, _out_avg_hr)
+            psnr_lr = peak_signal_noise_ratio(img_lr_torch, _out_lr)
+            psnr_hr = peak_signal_noise_ratio(img_hr_torch, _out_hr)
+            psnr_hr_sm = peak_signal_noise_ratio(img_hr_torch, _out_avg_hr)
+
+            ssim_lr = structural_similarity(img_lr_torch, _out_lr)
+            ssim_hr = structural_similarity(img_hr_torch, _out_hr)
+            ssim_hr_sm = structural_similarity(img_hr_torch, _out_avg_hr)
 
             psnrs[i] = [psnr_lr, psnr_hr, psnr_hr_sm]
             ssims[i] = [ssim_lr, ssim_hr, ssim_hr_sm]
 
             if i % show_every == 0:
                 pbar.set_description(
-                    f'MSE: {mse_lr[i].item():.4f} | PSNR_noisy: {psnr_lr:7.4f} | PSRN_gt: {psnr_hr:7.4f} PSNR_gt_sm: {psnr_hr_sm:7.4f}')
+                    f'MSE: {mse_lr[i].item():.4f} | PSNR_lr: {psnr_lr:7.4f} | PSRN_gt: {psnr_hr:7.4f} PSNR_gt_sm: {psnr_hr_sm:7.4f}')
 
                 recons[i // show_every] = _out_avg_hr.cpu().numpy()[0]
+                _out_var = torch.var(mc_ring_buffer, dim=0)
+                uncerts_epi[i // show_every] = _out_var.cpu().numpy()
 
                 if plot:
                     fig, ax0 = plt.subplots()
@@ -529,27 +533,37 @@ def main(
             mse_hr[i] = mse(out_avg_hr[:, :1], img_hr_torch).item()
             mse_lr[i] = mse(out_avg_lr[:, :1], img_lr_torch).item()
 
-            _out_lr = out_lr.detach()[:, :1].clip(0, 1)
-            _out_avg_lr = out_avg_lr.detach()[:, :1].clip(0, 1)
-            _out_hr = out_hr.detach()[:, :1].clip(0, 1)
-            _out_avg_hr = out_avg_hr.detach()[:, :1].clip(0, 1)
+        _out_lr = out_lr.detach()[:, :1].clip(0, 1)
+        _out_ale_lr = out_lr.detach()[:,1:].clip(0, 1)
+        _out_avg_lr = out_avg_lr.detach()[:, :1].clip(0, 1)
+        _out_hr = out_hr.detach()[:, :1].clip(0, 1)
+        _out_avg_hr = out_avg_hr.detach()[:, :1].clip(0, 1)
+        _out_ale_hr = out_hr.detach()[:, 1:].clip(0, 1)
 
-            psnr_lr = peak_signal_noise_ratio(img_lr_torch, _out_lr)
-            psnr_hr = peak_signal_noise_ratio(img_hr_torch, _out_hr)
-            psnr_hr_sm = peak_signal_noise_ratio(img_hr_torch, _out_avg_hr)
+        mc_ring_buffer_epi[i % mc_iter] = _out_hr[0]
+        mc_ring_buffer_ale[i % mc_iter] = _out_ale_hr[0]
 
-            ssim_lr = structural_similarity(img_lr_torch, _out_lr)
-            ssim_hr = structural_similarity(img_hr_torch, _out_hr)
-            ssim_hr_sm = structural_similarity(img_hr_torch, _out_avg_hr)
+        psnr_lr = peak_signal_noise_ratio(img_lr_torch, _out_lr)
+        psnr_hr = peak_signal_noise_ratio(img_hr_torch, _out_hr)
+        psnr_hr_sm = peak_signal_noise_ratio(img_hr_torch, _out_avg_hr)
+
+        ssim_lr = structural_similarity(img_lr_torch, _out_lr)
+        ssim_hr = structural_similarity(img_hr_torch, _out_hr)
+        ssim_hr_sm = structural_similarity(img_hr_torch, _out_avg_hr)
 
         psnrs[i] = [psnr_lr, psnr_hr, psnr_hr_sm]
         ssims[i] = [ssim_lr, ssim_hr, ssim_hr_sm]
 
         if i % show_every == 0:
             pbar.set_description(
-                f'MSE: {mse_lr[i].item():.4f} | PSNR_noisy: {psnr_lr:7.4f} | PSRN_gt: {psnr_hr:7.4f} PSNR_gt_sm: {psnr_hr_sm:7.4f}')
+                f'MSE: {mse_lr[i].item():.4f} | PSNR_lr: {psnr_lr:7.4f} | PSRN_gt: {psnr_hr:7.4f} PSNR_gt_sm: {psnr_hr_sm:7.4f}')
 
             recons[i // show_every] = _out_avg_hr.cpu().numpy()[0]
+
+            _out_var = torch.var(mc_ring_buffer_epi, dim=0)
+            _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
+            uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+            uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
                 fig, ax0 = plt.subplots()
@@ -667,7 +681,7 @@ def main(
             net_input = net_input_saved + (noise.normal_() * reg_noise_std)
 
         out_hr = net(net_input)
-        out_lr = downsapler(out_hr)
+        out_lr = downsampler(out_hr)
 
         nll = gaussian_nll(out_lr[:, :1], out_lr[:, 1:], img_lr_torch)
         kl = net.kl()
@@ -690,27 +704,37 @@ def main(
             mse_hr[i] = mse(out_avg_hr[:, :1], img_hr_torch).item()
             mse_lr[i] = mse(out_avg_lr[:, :1], img_lr_torch).item()
 
-            _out_lr = out_lr.detach()[:, :1].clip(0, 1)
-            _out_avg_lr = out_avg_lr.detach()[:, :1].clip(0, 1)
-            _out_hr = out_hr.detach()[:, :1].clip(0, 1)
-            _out_avg_hr = out_avg_hr.detach()[:, :1].clip(0, 1)
+        _out_lr = out_lr.detach()[:, :1].clip(0, 1)
+        _out_ale_lr = out_lr.detach()[:, 1:].clip(0, 1)
+        _out_avg_lr = out_avg_lr.detach()[:, :1].clip(0, 1)
+        _out_hr = out_hr.detach()[:, :1].clip(0, 1)
+        _out_avg_hr = out_avg_hr.detach()[:, :1].clip(0, 1)
+        _out_ale_hr = out_hr.detach()[:, 1:].clip(0, 1)
 
-            psnr_lr = peak_signal_noise_ratio(img_lr_torch, _out_lr)
-            psnr_hr = peak_signal_noise_ratio(img_hr_torch, _out_hr)
-            psnr_hr_sm = peak_signal_noise_ratio(img_hr_torch, _out_avg_hr)
+        mc_ring_buffer_epi[i % mc_iter] = _out_hr[0]
+        mc_ring_buffer_ale[i % mc_iter] = _out_ale_hr[0]
 
-            ssim_lr = structural_similarity(img_lr_torch, _out_lr)
-            ssim_hr = structural_similarity(img_hr_torch, _out_hr)
-            ssim_hr_sm = structural_similarity(img_hr_torch, _out_avg_hr)
+        psnr_lr = peak_signal_noise_ratio(img_lr_torch, _out_lr)
+        psnr_hr = peak_signal_noise_ratio(img_hr_torch, _out_hr)
+        psnr_hr_sm = peak_signal_noise_ratio(img_hr_torch, _out_avg_hr)
+
+        ssim_lr = structural_similarity(img_lr_torch, _out_lr)
+        ssim_hr = structural_similarity(img_hr_torch, _out_hr)
+        ssim_hr_sm = structural_similarity(img_hr_torch, _out_avg_hr)
 
         psnrs[i] = [psnr_lr, psnr_hr, psnr_hr_sm]
         ssims[i] = [ssim_lr, ssim_hr, ssim_hr_sm]
 
         if i % show_every == 0:
             pbar.set_description(
-                f'MSE: {mse_lr[i].item():.4f} | PSNR_noisy: {psnr_lr:7.4f} | PSRN_gt: {psnr_hr:7.4f} PSNR_gt_sm: {psnr_hr_sm:7.4f}')
+                f'MSE: {mse_lr[i].item():.4f} | PSNR_lr: {psnr_lr:7.4f} | PSRN_gt: {psnr_hr:7.4f} PSNR_gt_sm: {psnr_hr_sm:7.4f}')
 
             recons[i // show_every] = _out_avg_hr.cpu().numpy()[0]
+
+            _out_var = torch.var(mc_ring_buffer_epi, dim=0)
+            _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
+            uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+            uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
 
             if plot:
                 fig, ax0 = plt.subplots()
@@ -820,7 +844,7 @@ def main(
 # In[8]:
 
 
-main(factor=4, temp=6e-7, sigma=0.015, weight_decay_mcd=1e-4, dropout_p=0.2, weight_decay_sgld=5e-8, gamma=0.9999999, img=1,
+main(factor=4, temp=6e-7, sigma=0.015, weight_decay_mcd=1e-4, dropout_p=0.2, weight_decay_sgld=5e-8, gamma=0.9999999, img=4,
      seed=1, num_iter=500, lr=2e-3, save_path='/mnt/ssd/data/mfvi-dip-trys')
 # main(factor=4, temp=6e-7, sigma=0.015, weight_decay_mcd=1e-4, dropout_p=0.2, weight_decay_sgld=5e-8, gamma=0.9999999, img=1,
 #      seed=2, num_iter=50000, lr=2e-3, save_path='/opt/laves/logs')
