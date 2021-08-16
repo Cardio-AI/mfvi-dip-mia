@@ -94,6 +94,18 @@ def main(
         fname = 'data/super-resolution/lgg/BraTS19_TCIA10_109_1_t1.npy'
     elif img == 7:
         fname = 'data/super-resolution/lgg/BraTS19_TCIA10_109_1_t2.npy'
+    elif img == 8:
+        fname = 'data/super-resolution/covid-ct/p1-cov.npy'
+    elif img == 9:
+        fname = 'data/super-resolution/covid-ct/p2-cov.npy'
+    elif img == 10:
+        fname = 'data/super-resolution/covid-ct/p3-cov.npy'
+    elif img == 11:
+        fname = 'data/super-resolution/covid-ct/p1-no-cov.npy'
+    elif img == 12:
+        fname = 'data/super-resolution/covid-ct/p2-no-cov.npy'
+    elif img == 13:
+        fname = 'data/super-resolution/covid-ct/p3-no-cov.npy'
     else:
         assert False
 
