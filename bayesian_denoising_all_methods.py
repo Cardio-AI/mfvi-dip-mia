@@ -41,12 +41,8 @@ def main(
     img: int=0,
     num_iter: int=50000,
     lr: float=3e-4,
-    temp: float = 4e-6,  # lambda in the paper
-    sigma: float = 0.01,
-    weight_decay_mcd: float = 1e-4,
-    dropout_p: float = 0.2,
-    weight_decay_sgld: float = 5e-8,
-    gamma: float = 0.99999,
+    beta: float=4e-6,
+    tau: float=0.01,
     input_depth: int=16,
     gpu: int=0,
     seed: int=42,
@@ -73,68 +69,59 @@ def main(
 
     # denoising
     if img == 0:
-        fname = 'data/denoising/BACTERIA-1351146-0006.png'
+        fname = 'data/NORMAL-4951060-8.png'
         imsize = (256, 256)
     elif img == 1:
-        fname = 'data/denoising/VIRUS-9815549-0001.png'
+        fname = 'data/BACTERIA-1351146-0006.png'
         imsize = (256, 256)
     elif img == 2:
-        fname = 'data/denoising/BACTERIA-84621-0001_res.png'
-        imsize= (256, 256)
+        fname = 'data/081_HC.png'
+        imsize = (256, 256)
     elif img == 3:
-        fname = 'data/denoising/BACTERIA-140838-0004_res.png'
-        imsize= (256, 256)
+        fname = 'data/CNV-9997680-30.png'
+        imsize = (256, 256)
     elif img == 4:
-        fname = 'data/denoising/BACTERIA-213622-0001_res.png'
-        imsize= (256, 256)
-    elif img == 5:
-        fname = 'data/denoising/NORMAL-177055-0002_res.png'
-        imsize= (256, 256)
-    elif img == 6:
-        fname = 'data/denoising/NORMAL-293382-0001_res.png'
-        imsize= (256, 256)
-    elif img == 7:
-        fname = 'data/denoising/CNV-13823-2_res.png'
-        imsize= (256, 256)
+        fname = 'data/VIRUS-9815549-0001.png'
+        imsize = (256, 256)
     else:
         assert False
 
-    # if fname == 'data/NORMAL-4951060-8.jpeg':
+    if fname == 'data/NORMAL-4951060-8.jpeg':
 
-    # Add Gaussian noise to simulate speckle
-    img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-    img_np = pil_to_np(img_pil)
-    p_sigma = 0.1
-    img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
+        # Add Gaussian noise to simulate speckle
+        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+        img_np = pil_to_np(img_pil)
+        p_sigma = 0.1
+        img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
 
-    # elif fname in ['data/BACTERIA-1351146-0006.png', 'data/VIRUS-9815549-0001.png']:
-    #
-    #     # Add Poisson noise to simulate low dose X-ray
-    #     img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-    #     img_np = pil_to_np(img_pil)
-    #     #img_noisy_pil, img_noisy_np = get_noisy_image_poisson(img_np, p_lambda)
-    #     # for lam > 20, poisson can be approximated with Gaussian
-    #     p_sigma = 0.1
-    #     img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-    #
-    # elif fname == 'data/081_HC.png':
-    #
-    #     # Add Gaussian noise to simulate speckle
-    #     img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-    #     img_np = pil_to_np(img_pil)
-    #     p_sigma = 0.1
-    #     img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-    #
-    # elif fname == 'data/CNV-9997680-30.png':
-    #
-    #     # Add Gaussian noise to simulate speckle
-    #     img_pil = crop_image(get_image(fname, imsize)[0], d=32)
-    #     img_np = pil_to_np(img_pil)
-    #     p_sigma = 0.1
-    #     img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
-    #
-    # else:
-    #     assert False
+    elif fname in ['data/BACTERIA-1351146-0006.png', 'data/VIRUS-9815549-0001.png']:
+
+        # Add Poisson noise to simulate low dose X-ray
+        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+        img_np = pil_to_np(img_pil)
+        #img_noisy_pil, img_noisy_np = get_noisy_image_poisson(img_np, p_lambda)
+        # for lam > 20, poisson can be approximated with Gaussian
+        p_sigma = 0.1
+        img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
+
+    elif fname == 'data/081_HC.png':
+
+        # Add Gaussian noise to simulate speckle
+        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+        img_np = pil_to_np(img_pil)
+        p_sigma = 0.1
+        img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
+
+    elif fname == 'data/CNV-9997680-30.png':
+
+        # Add Gaussian noise to simulate speckle
+        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+        img_np = pil_to_np(img_pil)
+        p_sigma = 0.1
+        img_noisy_pil, img_noisy_np = get_noisy_image_gaussian(img_np, p_sigma)
+
+    else:
+        assert False
 
     if plot:
         q = plot_image_grid([img_np, img_noisy_np], 4, 6)
@@ -357,8 +344,7 @@ def main(
     psnr_noisy_last = 0
 
     parameters = get_params(OPT_OVER, net, net_input)
-    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay_sgld)
-    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
     
     param_noise_sigma = 2
     
@@ -381,9 +367,6 @@ def main(
         loss = mse(out[:,:1], img_noisy_torch)
         loss.backward()
         optimizer.step()
-
-        if scheduler.get_last_lr()[0] > 1e-8:
-            scheduler.step()
 
         # Smoothing
         if out_avg is None:
@@ -488,13 +471,13 @@ def main(
                   n_channels=2,
                   upsample_mode=upsample_mode,
                   dropout_mode_down=dropout_mode_down,
-                  dropout_p_down=dropout_p,
+                  dropout_p_down=dropout_p_down,
                   dropout_mode_up=dropout_mode_up,
-                  dropout_p_up=dropout_p,
+                  dropout_p_up=dropout_p_up,
                   dropout_mode_skip=dropout_mode_skip,
-                  dropout_p_skip=dropout_p,
+                  dropout_p_skip=dropout_p_skip,
                   dropout_mode_output=dropout_mode_output,
-                  dropout_p_output=dropout_p).type(dtype)
+                  dropout_p_output=dropout_p_output).type(dtype)
 
     net.apply(init_normal)
 
@@ -511,7 +494,7 @@ def main(
     psnr_noisy_last = 0
 
     parameters = get_params(OPT_OVER, net, net_input)
-    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay_mcd)
+    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
     
     pbar = tqdm(range(num_iter), miniters=num_iter//show_every)
     for i in pbar:
@@ -649,11 +632,11 @@ def main(
                   dropout_p_output=dropout_p_output).type(dtype)
     
     prior = {'mu': 0.0,
-             'sigma': sigma} # np.sqrt(tau)*1.0}
+             'sigma': np.sqrt(tau)*1.0}
     
     net = MeanFieldVI(net,
                       prior=prior,
-                      # beta=beta,
+                      beta=beta,
                       replace_layers='all',
                       device=device,
                       reparam='')
@@ -684,7 +667,7 @@ def main(
 
         nll = gaussian_nll(out[:,:1], out[:,1:], img_noisy_torch)
         kl = net.kl()
-        loss = nll + temp * kl
+        loss = nll + beta*kl
         loss.backward()
         optimizer.step()
 
@@ -836,10 +819,9 @@ def main(
 # In[8]:
 
 
-main(temp=6e-7, sigma=0.015, weight_decay_mcd=1e-4, dropout_p=0.2, weight_decay_sgld=5e-8, gamma=0.9999999, img=1,
-     seed=1, num_iter=500, lr=2e-3, save_path='/mnt/ssd/data/mfvi-dip-trys')
-# main(temp=6e-7, sigma=0.015, weight_decay_mcd=1e-4, dropout_p=0.2, weight_decay_sgld=5e-8, gamma=0.9999999, img=1, seed=2, num_iter=50000, lr=2e-3, save_path='/opt/laves/logs')
-# main(temp=6e-7, sigma=0.015, weight_decay_mcd=1e-4, dropout_p=0.2, weight_decay_sgld=5e-8, gamma=0.9999999, img=1, seed=3, num_iter=50000, lr=2e-3, save_path='/opt/laves/logs')
+main(beta=6e-7, tau=0.015, img=1, seed=1, num_iter=50000, lr=2e-3, save_path='/opt/laves/logs')
+main(beta=6e-7, tau=0.015, img=1, seed=2, num_iter=50000, lr=2e-3, save_path='/opt/laves/logs')
+main(beta=6e-7, tau=0.015, img=1, seed=3, num_iter=50000, lr=2e-3, save_path='/opt/laves/logs')
 
 
 # In[ ]:

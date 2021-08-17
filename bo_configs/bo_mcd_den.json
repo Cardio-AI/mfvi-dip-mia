@@ -11,7 +11,7 @@
   },
   "run_params": {
     "img": 0,
-    "num_iter": 100000,
+    "num_iter": 50000,
     "lr": 1e-3,
     "seed": 1,
     "p_sigma": 0.1,
@@ -19,8 +19,8 @@
     "show_every": 100,
     "plot": true,
     "save": true,
-    "devices": ["cuda:2", "cuda:3"],
-    "save_path": "/media/laves/bo_logs_mcd_ct",
-    "bo_results_path": "/media/laves/bo_results_mcd_ct"
+    "devices": ["cuda:0"],
+    "save_path": "/media/laves/bo_logs_mcd_den",
+    "bo_results_path": "/media/laves/bo_results_mcd_den"
   }
 }

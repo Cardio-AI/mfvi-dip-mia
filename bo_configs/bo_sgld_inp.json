@@ -11,16 +11,16 @@
   },
   "run_params": {
     "img": 0,
-    "num_iter": 100000,
-    "lr": 4e-3,
+    "num_iter": 50000,
+    "lr": 3e-3,
     "seed": 1,
     "p_sigma": 0.1,
     "input_depth": 16,
     "show_every": 100,
     "plot": true,
-    "save": true,
-    "devices": ["cuda:0", "cuda:2"],
-    "save_path": "/media/laves/bo_logs_sgld_ct",
-    "bo_results_path": "/media/laves/bo_results_sgld_ct"
+    "save": false,
+    "devices": ["cuda:0", "cuda:1"],
+    "save_path": "/media/laves/bo_logs_sgld_inp",
+    "bo_results_path": "/media/laves/bo_results_sgld_inp"
   }
 }

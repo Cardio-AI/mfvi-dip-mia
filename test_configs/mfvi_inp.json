@@ -1,0 +1,26 @@
+{
+  "bo_params": {
+    "temp": {
+      "logbounds": [-12.0, -2.0],
+      "candidates": [1e-12]
+    },
+    "sigma": {
+      "logbounds": [-10.0, -0.0],
+      "candidates": [0.0006506274185234421]
+    }
+  },
+  "run_params": {
+    "img": 1,
+    "num_iter": 50000,
+    "lr": 2e-3,
+    "seed": 2,
+    "p_sigma": 0.1,
+    "input_depth": 16,
+    "show_every": 100,
+    "plot": true,
+    "save": true,
+    "devices": ["cuda:1"],
+    "save_path": "/media/laves/test_logs_mfvi_inp_1",
+    "bo_results_path": "/media/laves/test_results_mfvi_inp_1"
+  }
+}

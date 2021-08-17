@@ -2,25 +2,25 @@
   "bo_params": {
     "temp": {
       "logbounds": [-12.0, -2.0],
-      "candidates": [1e-4, 1e-7]
+      "candidates": [1e-7]
     },
     "sigma": {
       "logbounds": [-10.0, -0.0],
-      "candidates": [1e-1, 1e-6]
+      "candidates": [1e-1]
     }
   },
   "run_params": {
-    "img": 0,
-    "num_iter": 100000,
-    "lr": 1e-3,
-    "seed": 1,
+    "img": 1,
+    "num_iter": 50000,
+    "lr": 2e-3,
+    "seed": 2,
     "p_sigma": 0.1,
     "input_depth": 16,
     "show_every": 100,
     "plot": true,
-    "save": false,
+    "save": true,
     "devices": ["cuda:0"],
-    "save_path": "/media/laves/bo_logs_mfvi_ct",
-    "bo_results_path": "/media/laves/bo_results_mfvi_ct"
+    "save_path": "/media/laves/test_logs_dip_inp_1",
+    "bo_results_path": "/media/laves/test_results_dip_inp_1"
   }
 }

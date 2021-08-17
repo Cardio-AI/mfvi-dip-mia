@@ -89,10 +89,7 @@ def plot_image_grid(images_np, nrow =8, factor=1, interpolation='lanczos'):
 
 def load(path):
     """Load PIL image."""
-    if not path.endswith('.npy'):
-        img = Image.open(path)
-    else:
-        img = Image.fromarray(np.uint8(np.load(path) * 255))
+    img = Image.open(path)
     return img
 
 
