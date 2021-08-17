@@ -1,7 +1,8 @@
 from .skip import skip
 
 
-def get_net(input_depth, NET_TYPE, pad, upsample_mode, n_channels=3, act_fun='LeakyReLU', skip_n33d=128, skip_n33u=128,
+def get_net(input_depth, NET_TYPE, pad, upsample_mode, n_channels=3, act_fun='LeakyReLU', need_sigmoid=False,
+            skip_n33d=128, skip_n33u=128,
             skip_n11=4, num_scales=5, downsample_mode='stride',
             dropout_mode_down='None', dropout_p_down=0.5,
             dropout_mode_up='None', dropout_p_up=0.5,
@@ -13,7 +14,7 @@ def get_net(input_depth, NET_TYPE, pad, upsample_mode, n_channels=3, act_fun='Le
                    num_channels_up =   [skip_n33u]*num_scales if isinstance(skip_n33u, int) else skip_n33u,
                    num_channels_skip = [skip_n11]*num_scales if isinstance(skip_n11, int) else skip_n11,
                    upsample_mode=upsample_mode, downsample_mode=downsample_mode,
-                   need_sigmoid=False, need_bias=True, pad=pad, act_fun=act_fun,
+                   need_sigmoid=need_sigmoid, need_bias=True, pad=pad, act_fun=act_fun,
                    dropout_mode_down=dropout_mode_down, dropout_p_down=dropout_p_down,
                    dropout_mode_up=dropout_mode_up,
                    dropout_p_up=dropout_p_up,

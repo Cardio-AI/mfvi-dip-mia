@@ -2,25 +2,25 @@
   "bo_params": {
     "dropout_p": {
       "logbounds": [-4.0, -0.1],
-      "candidates": [0.02, 0.2]
+      "candidates": [0.002483172576757482]
     },
     "weight_decay": {
       "logbounds": [-10.0, 0.0],
-      "candidates": [1e-1, 1e-6]
+      "candidates": [6.4e-7]
     }
   },
   "run_params": {
-    "img": 0,
-    "num_iter": 100000,
-    "lr": 1e-3,
+    "img": 1,
+    "num_iter": 50000,
+    "lr": 2e-3,
     "seed": 1,
     "p_sigma": 0.1,
     "input_depth": 16,
     "show_every": 100,
     "plot": true,
     "save": true,
-    "devices": ["cuda:2", "cuda:3"],
-    "save_path": "/media/laves/bo_logs_mcd_ct",
-    "bo_results_path": "/media/laves/bo_results_mcd_ct"
+    "devices": ["cuda:2"],
+    "save_path": "/media/laves/test_logs_mcd_inp_1",
+    "bo_results_path": "/media/laves/test_results_mcd_inp_1"
   }
 }

@@ -2,15 +2,15 @@
   "bo_params": {
     "gamma": {
       "logbounds": [-4e-4, 0.0],
-      "candidates": [0.9995, 0.999999]
+      "candidates": [0.9998853994046778]
     },
     "weight_decay": {
       "logbounds": [-12.0, -2.0],
-      "candidates": [1e-8, 1e-4]
+      "candidates": [0.000873242819037204]
     }
   },
   "run_params": {
-    "img": 0,
+    "img": 4,
     "num_iter": 100000,
     "lr": 4e-3,
     "seed": 1,
@@ -19,8 +19,8 @@
     "show_every": 100,
     "plot": true,
     "save": true,
-    "devices": ["cuda:0", "cuda:2"],
-    "save_path": "/media/laves/bo_logs_sgld_ct",
-    "bo_results_path": "/media/laves/bo_results_sgld_ct"
+    "devices": ["cuda:3"],
+    "save_path": "/media/laves/test_logs_sgld_ct_4",
+    "bo_results_path": "/media/laves/test_results_sgld_ct_4"
   }
 }

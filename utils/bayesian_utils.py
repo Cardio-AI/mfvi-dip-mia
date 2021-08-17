@@ -30,3 +30,10 @@ def gaussian_nll(mu, neg_logvar, target, reduction='mean'):
     neg_logvar = torch.clamp(neg_logvar, min=-20, max=20)  # prevent nan loss
     loss = torch.exp(neg_logvar) * torch.pow(target - mu, 2) - neg_logvar
     return loss.mean() if reduction == 'mean' else loss.sum()
+
+
+def gaussian_nll_inpainting(mu, neg_logvar, target, mask, reduction='mean'):
+    neg_logvar = torch.clamp(neg_logvar, min=-20, max=20).clone()  # prevent nan loss
+    loss = torch.exp(neg_logvar) * torch.pow(target - mu, 2) - neg_logvar
+    loss = loss * mask  # apply mask
+    return loss.mean() if reduction == 'mean' else loss.sum()

@@ -35,17 +35,89 @@ from torch.distributions import constraints, transform_to
 import gpytorch
 
 # own
-from models import get_net
+from models import get_net, skip
 from models.downsampler import Downsampler
 from utils.denoising_utils import get_noisy_image_gaussian
 from utils.sr_utils import load_LR_HR_imgs_sr
-from utils.bayesian_utils import gaussian_nll
-from utils.common_utils import crop_image, get_image, pil_to_np, np_to_pil, plot_image_grid, \
-    get_noise, get_params, np_to_torch, peak_signal_noise_ratio, structural_similarity
+from utils.bayesian_utils import gaussian_nll, gaussian_nll_inpainting
+from utils.common_utils import init_normal, crop_image, get_image, pil_to_np, np_to_pil, plot_image_grid, \
+    get_noise, get_params, np_to_torch, peak_signal_noise_ratio, structural_similarity, torch_to_np
 from BayTorch.freq_to_bayes import MeanFieldVI
 
-torch.manual_seed(0)
-np.random.seed(0)
+
+def get_img_superresolution(img):
+    if img == 0:
+        fname = 'data/super-resolution/img_139_res384.png'
+        img_pil = get_image(fname)[0]
+        img_np = pil_to_np(img_pil)
+    elif img == 1:
+        fname = 'data/super-resolution/img_203_res.png'
+        img_pil = get_image(fname)[0]
+        img_np = pil_to_np(img_pil)
+    elif img == 2:
+        img_np = np.load('data/super-resolution/healthy/OAS30534_MR_d0474_t1.npy')[None,].astype(np.float32)
+    elif img == 3:
+        img_np = np.load('data/super-resolution/hgg/BraTS19_CBICA_AWI_1_t1.npy')[None,].astype(np.float32)
+    elif img == 4:
+        img_np = np.load('data/super-resolution/lgg/BraTS19_TCIA10_109_1_t1.npy')[None,].astype(np.float32)
+    else:
+        assert False
+
+    imsize = img_np.shape[1:]
+
+    return img_np, imsize
+
+
+def get_img_inpainting(img):
+    if img == 0:
+        fname = 'data/inpainting/hair_0_res.png'
+        mask_fname = 'data/inpainting/hair_0_res_mask.png'
+    elif img == 1:
+        fname = 'data/inpainting/hair_1_res.png'
+        mask_fname = 'data/inpainting/hair_1_res_mask.png'
+    elif img == 2:
+        fname = 'data/inpainting/hair_2_res.png'
+        mask_fname = 'data/inpainting/hair_2_res_mask.png'
+    elif img == 3:
+        fname = 'data/inpainting/hair_3_res.png'
+        mask_fname = 'data/inpainting/hair_3_res_mask.png'
+    elif img == 4:
+        fname = 'data/inpainting/hair_4_res.png'
+        mask_fname = 'data/inpainting/hair_4_res_mask.png'
+    elif img == 5:
+        fname = 'data/inpainting/hair_5_res.png'
+        mask_fname = 'data/inpainting/hair_5_res_mask.png'
+    else:
+        assert False
+
+    img_pil, img_np = get_image(fname, -1)
+    _, img_mask_np = get_image(mask_fname, -1)
+
+    imsize = img_np.shape[1:]
+
+    return img_np, img_mask_np, imsize
+
+
+def get_img_ct(img):
+    from skimage.data import brain
+    from skimage.transform import rescale
+
+    if img == 0:
+        img_np = brain()[4][None,] / (2 ** 16)
+    elif img == 1:
+        img_np = rescale(np.load("./data/ct/coronacases_org_001.npy"), 0.5)[None,]
+    elif img == 2:
+        img_np = rescale(np.load("./data/ct/coronacases_org_002.npy"), 0.5)[None,]
+    elif img == 3:
+        img_np = rescale(np.load("./data/ct/coronacases_org_003.npy"), 0.5)[None,]
+    elif img == 4:
+        img_np = rescale(np.load("./data/ct/coronacases_org_004.npy"), 0.5)[None,]
+    elif img == 5:
+        img_np = rescale(np.load("./data/ct/coronacases_org_005.npy"), 0.5)[None,]
+    else:
+        assert False
+    return img_np, img_np.shape[1:]
+
 
 def add_noise(model, param_noise_sigma: float, lr: float):
     for n in [x for x in model.parameters() if len(x.size()) == 4]:
@@ -142,6 +214,187 @@ def plot_results(
     plt.savefig(f'{save_path}/{timestamp}/ssims.png')
 
 
+def run_ct_dip(
+        img: int = 0,
+        imsize: Tuple[int] = (256, 256),
+        p_sigma: float = 0.1,
+        num_iter: int = 5000,
+        lr: float = 3e-4,
+        input_depth: int = 16,
+        downsampler: nn.Module = None,
+        mask: torch.Tensor = torch.tensor([1]),
+        device: torch.device = torch.device('cpu'),
+        index: int = 0,
+        seed: int = 42,
+        show_every: int = 100,
+        plot: bool = True,
+        save: bool = True,
+        save_path: str = '../logs',
+        *args,
+        **kwargs
+) -> float:
+    from radon import FastRadonTransform
+
+    timestamp = str(time.time())
+    Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'w') as file:
+        for key, val in locals().items():
+            print(key, '=', val, file=file)
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.benchmark = True
+
+    img_np, imsize = get_img_ct(img)
+
+    if plot:
+        q = plot_image_grid([img_np], 4, 6)
+        out_pil = np_to_pil(q)
+        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
+
+    INPUT = 'noise'
+    OPT_OVER = 'net'  # 'net,input'
+
+    reg_noise_std = 1. / 10.
+    LR = lr
+
+    num_iter += 1
+    exp_weight = 0.99
+
+    mse = torch.nn.MSELoss()
+
+    img_torch = np_to_torch(img_np).float().to(device)
+
+    MSE_CORRUPTED = {}
+    MSE_GT = {}
+    RECONS = {}
+    UNCERTS_EPI = {}
+    UNCERTS_ALE = {}
+    PSNRS = {}
+    SSIMS = {}
+
+    figsize = 4
+
+    weight_decay = 0
+
+    net_input = get_noise(input_depth, INPUT, imsize).to(device).detach()
+
+    net_input_saved = net_input.detach().clone()
+    noise = net_input.detach().clone()
+
+    out_avg = None
+
+    NET_TYPE = 'skip'
+
+    skip_n33d = [16, 32, 64, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128]
+    skip_n11 = 4
+    num_scales = 5
+    upsample_mode = 'bilinear'
+    pad = 'reflection'
+
+    net = get_net(input_depth, NET_TYPE, pad,
+                  skip_n33d=skip_n33d,
+                  skip_n33u=skip_n33u,
+                  skip_n11=skip_n11,
+                  num_scales=num_scales,
+                  n_channels=1,
+                  upsample_mode=upsample_mode).to(device)
+
+    theta = torch.arange(0, 180., step=4.).to(device)
+    forward_radon = FastRadonTransform(img_torch.size(), theta)
+    img_radon = forward_radon(img_torch).to(device).detach()
+
+    mse_corrupted = np.zeros(num_iter)
+    mse_gt = np.zeros(num_iter)
+    recons = np.zeros((num_iter // show_every + 1, 1) + imsize)
+
+    psnrs_shape = (num_iter, 3)
+    psnrs = np.zeros(psnrs_shape)
+    ssims = np.zeros(psnrs_shape)
+
+    img_mean = 0
+    sample_count = 0
+    psnr_corrupted_last = 0
+
+    parameters = get_params(OPT_OVER, net, net_input)
+    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
+
+    pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
+    for i in pbar:
+        optimizer.zero_grad()
+
+        if reg_noise_std > 0:
+            net_input = net_input_saved + (noise.normal_() * reg_noise_std)
+
+        out = net(net_input)
+
+        loss = torch.nn.functional.mse_loss(forward_radon(out), img_radon)
+        loss.backward()
+
+        if not torch.isnan(loss):
+            optimizer.step()
+
+        # Smoothing
+        if out_avg is None:
+            out_avg = out.detach()
+        else:
+            out_avg = out_avg * exp_weight + out.detach() * (1 - exp_weight)
+
+        with torch.no_grad():
+            if downsampler is not None:
+                _out_avg = downsampler(out_avg)
+            else:
+                _out_avg = out_avg
+            mse_corrupted[i] = mse(_out_avg[:, :1], img_torch).item()
+            mse_gt[i] = mse_corrupted[i]
+
+            _out = out.detach()[:, :1].clip(0, 1)
+            _out_avg = out_avg.detach()[:, :1].clip(0, 1)
+
+            psnr_corrupted = peak_signal_noise_ratio(img_torch, _out)
+            psnr_gt = psnr_corrupted
+            psnr_gt_sm = peak_signal_noise_ratio(img_torch, _out_avg)
+
+            ssim_corrupted = structural_similarity(img_torch, _out)
+            ssim_gt = ssim_corrupted
+            ssim_gt_sm = structural_similarity(img_torch, _out_avg)
+
+        psnrs[i] = [psnr_corrupted, psnr_gt, psnr_gt_sm]
+        ssims[i] = [ssim_corrupted, ssim_gt, ssim_gt_sm]
+
+        if i % show_every == 0:
+            pbar.set_description(f'MSE: {mse_corrupted[i].item():.4f} | PSNR_noisy: {psnr_corrupted:7.4f} \
+| PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
+
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
+
+            if plot:
+                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_dip.png', "MSE DIP")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+
+    MSE_CORRUPTED['dip'] = mse_corrupted
+    MSE_GT['dip'] = mse_gt
+    RECONS['dip'] = recons
+    PSNRS['dip'] = psnrs
+    SSIMS['dip'] = ssims
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'a') as file:
+        if plot:
+            plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+
+    # save stuff for plotting
+    if save:
+        np.savez(f"{save_path}/{timestamp}/save.npz",
+                 img_gt=img_torch.cpu().numpy(), img_radon=img_radon.cpu().numpy(), mse_noisy=MSE_CORRUPTED,
+                 mse_gt=MSE_GT, recons=RECONS, uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
+
+    plt.close('all')
+
+    return PSNRS['dip'][-1, 2]
+
+
 def run_ct_mfvi(
         img: int = 0,
         imsize: Tuple[int] = (256, 256),
@@ -176,13 +429,7 @@ def run_ct_mfvi(
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
 
-    if img == 0:
-        from skimage.data import brain
-
-        img_np = brain()[4][None,] / (2 ** 16)
-        imsize = (256, 256)
-    else:
-        assert False
+    img_np, imsize = get_img_ct(img)
 
     if plot:
         q = plot_image_grid([img_np], 4, 6)
@@ -204,6 +451,7 @@ def run_ct_mfvi(
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
+    RECONS = {}
     UNCERTS_EPI = {}
     UNCERTS_ALE = {}
     PSNRS = {}
@@ -242,7 +490,7 @@ def run_ct_mfvi(
                   upsample_mode=upsample_mode).to(device)
 
     prior = {'mu': 0.0,
-             'sigma': sigma}
+             'sigma': np.sqrt(temp)*sigma}
 
     net = MeanFieldVI(net,
                       prior=prior,
@@ -256,7 +504,7 @@ def run_ct_mfvi(
 
     mse_corrupted = np.zeros(num_iter)
     mse_gt = np.zeros(num_iter)
-
+    recons = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_shape = (num_iter // show_every + 1, 1) + imsize
     uncerts_epi = np.zeros(uncerts_shape)
     uncerts_ale = np.zeros(uncerts_shape)
@@ -325,12 +573,17 @@ def run_ct_mfvi(
 
             _out_var = torch.var(mc_ring_buffer_epi, dim=0)
             uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mfvi.png', "MSE MFVI")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['mfvi'] = mse_corrupted
     MSE_GT['mfvi'] = mse_gt
+    RECONS['mfvi'] = recons
     UNCERTS_EPI['mfvi'] = uncerts_epi
     UNCERTS_ALE['mfvi'] = uncerts_ale
     PSNRS['mfvi'] = psnrs
@@ -339,13 +592,12 @@ def run_ct_mfvi(
     with open(f'{save_path}/{timestamp}/locals.txt', 'a') as file:
         if plot:
             plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
-            np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
 
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 noisy_img=img_radon.cpu().numpy(), mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 img_gt=img_torch.cpu().numpy(), img_radon=img_radon.cpu().numpy(), mse_noisy=MSE_CORRUPTED,
+                 mse_gt=MSE_GT, recons=RECONS, uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -386,13 +638,7 @@ def run_ct_mcd(
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
 
-    if img == 0:
-        from skimage.data import brain
-
-        img_np = brain()[4][None,] / (2 ** 16)
-        imsize = (256, 256)
-    else:
-        assert False
+    img_np, imsize = get_img_ct(img)
 
     if plot:
         q = plot_image_grid([img_np], 4, 6)
@@ -414,6 +660,7 @@ def run_ct_mcd(
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
+    RECONS = {}
     UNCERTS_EPI = {}
     UNCERTS_ALE = {}
     PSNRS = {}
@@ -470,7 +717,7 @@ def run_ct_mcd(
 
     mse_corrupted = np.zeros(num_iter)
     mse_gt = np.zeros(num_iter)
-
+    recons = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_shape = (num_iter // show_every + 1, 1) + imsize
     uncerts_epi = np.zeros(uncerts_shape)
     uncerts_ale = np.zeros(uncerts_shape)
@@ -537,12 +784,17 @@ def run_ct_mcd(
 
             _out_var = torch.var(mc_ring_buffer_epi, dim=0)
             uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mcd.png', "MSE MC Dropout")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['mcd'] = mse_corrupted
     MSE_GT['mcd'] = mse_gt
+    RECONS['mcd'] = recons
     UNCERTS_EPI['mcd'] = uncerts_epi
     UNCERTS_ALE['mcd'] = uncerts_ale
     PSNRS['mcd'] = psnrs
@@ -551,13 +803,12 @@ def run_ct_mcd(
     with open(f'{save_path}/{timestamp}/locals.txt', 'a') as file:
         if plot:
             plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
-            np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
 
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 noisy_img=img_radon.cpu().numpy(), mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 input_img=img_torch.cpu().numpy(), radon_img=img_radon.cpu().numpy(), mse_noisy=MSE_CORRUPTED,
+                 mse_gt=MSE_GT, recons=RECONS, uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -598,13 +849,7 @@ def run_ct_sgld(
     torch.manual_seed(seed)
     torch.backends.cudnn.benchmark = True
 
-    if img == 0:
-        from skimage.data import brain
-
-        img_np = brain()[4][None,] / (2 ** 16)
-        imsize = (256, 256)
-    else:
-        assert False
+    img_np, imsize = get_img_ct(img)
 
     if plot:
         q = plot_image_grid([img_np], 4, 6)
@@ -626,6 +871,7 @@ def run_ct_sgld(
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
+    RECONS = {}
     UNCERTS_EPI = {}
     UNCERTS_ALE = {}
     PSNRS = {}
@@ -669,7 +915,7 @@ def run_ct_sgld(
 
     mse_corrupted = np.zeros(num_iter)
     mse_gt = np.zeros(num_iter)
-
+    recons = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_shape = (num_iter // show_every + 1, 1) + imsize
     uncerts_epi = np.zeros(uncerts_shape)
     uncerts_ale = np.zeros(uncerts_shape)
@@ -740,12 +986,17 @@ def run_ct_sgld(
 
             _out_var = torch.var(mc_ring_buffer_epi, dim=0)
             uncerts_epi[i // show_every] = _out_var.cpu().numpy()
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_sgld.png', "MSE SGLD")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['sgld'] = mse_corrupted
     MSE_GT['sgld'] = mse_gt
+    RECONS['sgld'] = recons
     UNCERTS_EPI['sgld'] = uncerts_epi
     UNCERTS_ALE['sgld'] = uncerts_ale
     PSNRS['sgld'] = psnrs
@@ -754,13 +1005,12 @@ def run_ct_sgld(
     with open(f'{save_path}/{timestamp}/locals.txt', 'a') as file:
         if plot:
             plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
-            np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
 
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 noisy_img=img_radon.cpu().numpy(), mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 input_img=img_torch.cpu().numpy(), radon_img=img_radon.cpu().numpy(), mse_noisy=MSE_CORRUPTED,
+                 mse_gt=MSE_GT, recons=RECONS, uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -830,7 +1080,6 @@ def run_den_mfvi(
         out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     INPUT = 'noise'
-    # pad = 'reflection'
     OPT_OVER = 'net'  # 'net,input'
 
     reg_noise_std = 1. / 10.
@@ -846,6 +1095,7 @@ def run_den_mfvi(
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
+    RECONS = {}
     UNCERTS_EPI = {}
     UNCERTS_ALE = {}
     PSNRS = {}
@@ -884,7 +1134,7 @@ def run_den_mfvi(
                   upsample_mode=upsample_mode).to(device)
 
     prior = {'mu': 0.0,
-             'sigma': sigma}
+             'sigma': np.sqrt(temp)*sigma}
 
     net = MeanFieldVI(net,
                       prior=prior,
@@ -894,6 +1144,7 @@ def run_den_mfvi(
 
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
+    recons = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_epi = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_ale = np.zeros((num_iter // show_every + 1, 1) + imsize)
     psnrs = np.zeros((num_iter, 3))
@@ -921,7 +1172,8 @@ def run_den_mfvi(
         loss.backward()
         optimizer.step()
 
-        out[:, 1:] = torch.exp(-out[:, 1:])  # aleatoric uncertainty
+        with torch.no_grad():
+            out[:, 1:] = torch.exp(-out[:, 1:])  # aleatoric uncertainty
 
         # Smoothing
         if out_avg is None:
@@ -962,12 +1214,17 @@ def run_den_mfvi(
             _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
             uncerts_epi[i // show_every] = _out_var.cpu().numpy()
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mfvi.png', "MSE MFVI")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['mfvi'] = mse_corrupted
     MSE_GT['mfvi'] = mse_gt
+    RECONS['mfvi'] = recons
     UNCERTS_EPI['mfvi'] = uncerts_epi
     UNCERTS_ALE['mfvi'] = uncerts_ale
     PSNRS['mfvi'] = psnrs
@@ -980,8 +1237,8 @@ def run_den_mfvi(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 noisy_img=img_noisy_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 img_gt=img_np, img_noisy=img_noisy_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT, recons=RECONS,
+                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -1051,7 +1308,6 @@ def run_den_mcd(
         out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     INPUT = 'noise'
-    # pad = 'reflection'
     OPT_OVER = 'net'  # 'net,input'
 
     reg_noise_std = 1. / 10.
@@ -1068,6 +1324,7 @@ def run_den_mcd(
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
+    RECONS = {}
     UNCERTS_EPI = {}
     UNCERTS_ALE = {}
     PSNRS = {}
@@ -1118,6 +1375,7 @@ def run_den_mcd(
 
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
+    recons = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_epi = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_ale = np.zeros((num_iter // show_every + 1, 1) + imsize)
     psnrs = np.zeros((num_iter, 3))
@@ -1129,8 +1387,6 @@ def run_den_mcd(
 
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
-
-    # mask = mask.to(device)
 
     pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
     for i in pbar:
@@ -1145,7 +1401,8 @@ def run_den_mcd(
         loss.backward()
         optimizer.step()
 
-        out[:, 1:] = torch.exp(-out[:, 1:])  # aleatoric uncertainty
+        with torch.no_grad():
+            out[:, 1:] = torch.exp(-out[:, 1:])  # aleatoric uncertainty
 
         # Smoothing
         if out_avg is None:
@@ -1186,18 +1443,21 @@ def run_den_mcd(
             _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
             uncerts_epi[i // show_every] = _out_var.cpu().numpy()
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mcd.png', "MSE MC Dropout")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['mcd'] = mse_corrupted
     MSE_GT['mcd'] = mse_gt
+    RECONS['mcd'] = recons
     UNCERTS_EPI['mcd'] = uncerts_epi
     UNCERTS_ALE['mcd'] = uncerts_ale
     PSNRS['mcd'] = psnrs
     SSIMS['mcd'] = ssims
-
-    ## END
 
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
@@ -1209,8 +1469,8 @@ def run_den_mcd(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 noisy_img=img_noisy_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 img_gt=img_np, img_noisy=img_noisy_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT, recons=RECONS,
+                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -1280,7 +1540,6 @@ def run_den_sgld(
         out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     INPUT = 'noise'
-    # pad = 'reflection'
     OPT_OVER = 'net'  # 'net,input'
 
     reg_noise_std = 1. / 10.
@@ -1297,6 +1556,7 @@ def run_den_sgld(
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
+    RECONS = {}
     UNCERTS_EPI = {}
     UNCERTS_ALE = {}
     PSNRS = {}
@@ -1334,6 +1594,7 @@ def run_den_sgld(
 
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
+    recons = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_epi = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_ale = np.zeros((num_iter // show_every + 1, 1) + imsize)
     psnrs = np.zeros((num_iter, 3))
@@ -1366,7 +1627,8 @@ def run_den_sgld(
         if scheduler.get_last_lr()[0] > 1e-8:
             scheduler.step()
 
-        out[:, 1:] = torch.exp(-out[:, 1:])  # aleatoric uncertainty
+        with torch.no_grad():
+            out[:, 1:] = torch.exp(-out[:, 1:])  # aleatoric uncertainty
 
         # Smoothing
         if out_avg is None:
@@ -1407,18 +1669,21 @@ def run_den_sgld(
             _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
             uncerts_epi[i // show_every] = _out_var.cpu().numpy()
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_sgld.png', "MSE SGLD")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['sgld'] = mse_corrupted
     MSE_GT['sgld'] = mse_gt
+    RECONS['sgld'] = recons
     UNCERTS_EPI['sgld'] = uncerts_epi
     UNCERTS_ALE['sgld'] = uncerts_ale
     PSNRS['sgld'] = psnrs
     SSIMS['sgld'] = ssims
-
-    ## END
 
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
@@ -1430,8 +1695,8 @@ def run_den_sgld(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 noisy_img=img_noisy_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 img_gt=img_np, img_noisy=img_noisy_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT, recons=RECONS,
+                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -1444,7 +1709,7 @@ def run_sr_mfvi(
         factor: int = 4,
         num_iter: int = 5000,
         lr: float = 3e-4,
-        temp: float = 4e-6,  # lambda in the paper
+        temp: float = 4e-6,
         sigma: float = 0.01,
         input_depth: int = 16,
         downsampler: nn.Module = None,
@@ -1471,39 +1736,10 @@ def run_sr_mfvi(
 
     torch.backends.cudnn.benchmark = True
 
-    imsize = (256, 256)
-
-    if img == 0:
-        fname = 'data/super-resolution/img_139_res384.png'
-        # imsize = (256, 256)
-    elif img == 1:
-        fname = 'data/super-resolution/img_203_res.png'
-        # imsize = (256, 256)
-    else:
-        assert False
-
-    if fname in ['data/super-resolution/img_139_res384.png', 'data/super-resolution/img_203_res.png']:
-
-        imgs = load_LR_HR_imgs_sr(fname, -1, factor, enforse_div32="CROP")
-
-        img_hr_np = imgs["HR_np"]
-        img_lr_np = imgs["LR_np"]
-        img_pil = imgs["HR_pil"]
-
-        imsize = img_hr_np.shape[1:]
-
-    else:
-        assert False
-
-    if plot:
-        _img_lr_np = cv2.resize(img_lr_np[0], img_hr_np.shape[2:0:-1], interpolation=cv2.INTER_NEAREST)[np.newaxis]
-        q = plot_image_grid([img_hr_np, _img_lr_np], 4, 6)
-        out_pil = np_to_pil(q)
-        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
+    img_np, imsize = get_img_superresolution(img)
 
     INPUT = 'noise'
-    # pad = 'reflection'
-    OPT_OVER = 'net'  # 'net,input'
+    OPT_OVER = 'net'
 
     reg_noise_std = 1. / 10.
     LR = lr
@@ -1514,11 +1750,25 @@ def run_sr_mfvi(
 
     mse = torch.nn.MSELoss()
 
-    img_torch = np_to_torch(img_hr_np).to(device)
-    img_lr_torch = np_to_torch(img_lr_np).to(device)
+    downsampler = lambda x: torch.nn.functional.interpolate(
+        x,
+        scale_factor=1/factor,
+        mode='nearest',
+        recompute_scale_factor=False)
+
+    img_torch = np_to_torch(img_np).to(device)
+    img_small_torch = downsampler(img_torch).detach()
+
+    if plot:
+        _img_lr_np = cv2.resize(img_small_torch[0,0].cpu().numpy(),
+                                img_np.shape[2:0:-1], interpolation=cv2.INTER_NEAREST)[np.newaxis]
+        q = plot_image_grid([img_np, _img_lr_np], 4, 6)
+        out_pil = np_to_pil(q)
+        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
+    RECONS = {}
     UNCERTS_EPI = {}
     UNCERTS_ALE = {}
     PSNRS = {}
@@ -1526,10 +1776,9 @@ def run_sr_mfvi(
 
     figsize = 4
 
-    ## MFVI
     weight_decay = 0
 
-    net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
+    net_input = get_noise(input_depth, INPUT, (imsize[0], imsize[1])).to(device).detach()
 
     net_input_saved = net_input.detach().clone()
     noise = net_input.detach().clone()
@@ -1542,8 +1791,8 @@ def run_sr_mfvi(
 
     NET_TYPE = 'skip'
 
-    skip_n33d = 128
-    skip_n33u = 128
+    skip_n33d = [16, 32, 64, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128]
     skip_n11 = 4
     num_scales = 5
     upsample_mode = 'bilinear'
@@ -1558,19 +1807,17 @@ def run_sr_mfvi(
                   upsample_mode=upsample_mode).to(device)
 
     prior = {'mu': 0.0,
-             'sigma': sigma}
+             'sigma': np.sqrt(temp)*sigma}
 
     net = MeanFieldVI(net,
                       prior=prior,
-                      # beta=beta,
                       replace_layers='all',
                       device=device,
                       reparam='')
 
-    downsampler = Downsampler(2, factor, "lanczos3", phase=0.5, preserve_size=True).to(device)
-
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
+    recons = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_epi = np.zeros((num_iter // show_every + 1, 1) + imsize)
     uncerts_ale = np.zeros((num_iter // show_every + 1, 1) + imsize)
     psnrs = np.zeros((num_iter, 3))
@@ -1583,8 +1830,6 @@ def run_sr_mfvi(
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
 
-    # mask = mask.to(device)
-
     pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
     for i in pbar:
         optimizer.zero_grad()
@@ -1595,13 +1840,15 @@ def run_sr_mfvi(
         out_hr = net(net_input)
         out_lr = downsampler(out_hr)
 
-        nll = gaussian_nll(out_lr[:, :1], out_lr[:, 1:], img_lr_torch)
+        nll = gaussian_nll(out_lr[:, :1], out_lr[:, 1:], img_small_torch)
+
         kl = net.kl()
         loss = nll + temp * kl
         loss.backward()
         optimizer.step()
 
-        out_hr[:, 1:] = torch.exp(-out_hr[:, 1:])  # aleatoric uncertainty
+        with torch.no_grad():
+            out_hr[:, 1:] = torch.exp(-out_hr[:, 1:])  # aleatoric uncertainty
 
         # Smoothing
         if out_avg is None:
@@ -1610,7 +1857,7 @@ def run_sr_mfvi(
             out_avg = out_avg * exp_weight + out_hr.detach() * (1 - exp_weight)
 
         with torch.no_grad():
-            mse_corrupted[i] = mse(downsampler(out_avg)[:, :1], img_lr_torch).item()
+            mse_corrupted[i] = mse(downsampler(out_avg)[:, :1], img_small_torch).item()
             mse_gt[i] = mse(out_avg[:, :1], img_torch).item()
 
             _out = out_hr.detach()[:, :1].clip(0, 1)
@@ -1621,10 +1868,10 @@ def run_sr_mfvi(
             mc_ring_buffer_epi[i % mc_iter] = _out[0]
             mc_ring_buffer_ale[i % mc_iter] = _out_ale[0]
 
-            psnr_lr = peak_signal_noise_ratio(img_lr_torch, _out_lr)
+            psnr_lr = peak_signal_noise_ratio(img_small_torch, _out_lr)
             psnr_gt = peak_signal_noise_ratio(img_torch, _out)
             psnr_gt_sm = peak_signal_noise_ratio(img_torch, _out_avg)
-            ssim_lr = structural_similarity(img_lr_torch, _out_lr)
+            ssim_lr = structural_similarity(img_small_torch, _out_lr)
             ssim_gt = structural_similarity(img_torch, _out)
             ssim_gt_sm = structural_similarity(img_torch, _out_avg)
 
@@ -1639,18 +1886,21 @@ def run_sr_mfvi(
             _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
             uncerts_epi[i // show_every] = _out_var.cpu().numpy()
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mfvi.png', "MSE MFVI")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['mfvi'] = mse_corrupted
     MSE_GT['mfvi'] = mse_gt
+    RECONS['mfvi'] = recons
     UNCERTS_EPI['mfvi'] = uncerts_epi
     UNCERTS_ALE['mfvi'] = uncerts_ale
     PSNRS['mfvi'] = psnrs
     SSIMS['mfvi'] = ssims
-
-    ## END
 
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
@@ -1662,8 +1912,8 @@ def run_sr_mfvi(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 lr_img=img_lr_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 img_hr=img_np, img_lr=img_small_torch.cpu().numpy().squeeze(), mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 recons=RECONS, uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -1703,38 +1953,20 @@ def run_sr_mcd(
 
     torch.backends.cudnn.benchmark = True
 
-    imsize = (256, 256)
-
     if img == 0:
         fname = 'data/super-resolution/img_139_res384.png'
-        # imsize = (256, 256)
-    elif img == 1:
-        fname = 'data/super-resolution/img_203_res.png'
-        # imsize = (256, 256)
+        imsize = (384, 384)
+        imchannels = 1
     else:
         assert False
 
-    if fname in ['data/super-resolution/img_139_res384.png', 'data/super-resolution/img_203_res.png']:
-
-        imgs = load_LR_HR_imgs_sr(fname, -1, factor, enforse_div32="CROP")
-
-        img_hr_np = imgs["HR_np"]
-        img_lr_np = imgs["LR_np"]
-        img_pil = imgs["HR_pil"]
-
-        imsize = img_hr_np.shape[1:]
-
+    if fname in ['data/super-resolution/img_139_res384.png']:
+        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+        img_np = pil_to_np(img_pil)
     else:
         assert False
-
-    if plot:
-        _img_lr_np = cv2.resize(img_lr_np[0], img_hr_np.shape[2:0:-1], interpolation=cv2.INTER_NEAREST)[np.newaxis]
-        q = plot_image_grid([img_hr_np, _img_lr_np], 4, 6)
-        out_pil = np_to_pil(q)
-        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     INPUT = 'noise'
-    # pad = 'reflection'
     OPT_OVER = 'net'  # 'net,input'
 
     reg_noise_std = 1. / 10.
@@ -1746,8 +1978,21 @@ def run_sr_mcd(
 
     mse = torch.nn.MSELoss()
 
-    img_torch = np_to_torch(img_hr_np).to(device)
-    img_lr_torch = np_to_torch(img_lr_np).to(device)
+    downsampler = lambda x: torch.nn.functional.interpolate(
+        x,
+        scale_factor=1/factor,
+        mode='nearest',
+        recompute_scale_factor=False)
+
+    img_torch = np_to_torch(img_np).to(device)
+    img_small_torch = downsampler(img_torch).detach()
+
+    if plot:
+        _img_lr_np = cv2.resize(img_small_torch[0, 0].cpu().numpy(),
+                                img_np.shape[2:0:-1], interpolation=cv2.INTER_NEAREST)[np.newaxis]
+        q = plot_image_grid([img_np, _img_lr_np], 4, 6)
+        out_pil = np_to_pil(q)
+        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
@@ -1771,10 +2016,10 @@ def run_sr_mcd(
 
     NET_TYPE = 'skip'
 
-    skip_n33d = 64 # 128
-    skip_n33u = 64 # 128
+    skip_n33d = [16, 32, 64, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128]
     skip_n11 = 4
-    num_scales = 3 # 5
+    num_scales = 5
     upsample_mode = 'bilinear'
     pad = 'reflection'
 
@@ -1798,8 +2043,7 @@ def run_sr_mcd(
                   dropout_p_skip=dropout_p,
                   dropout_mode_output=dropout_mode_output,
                   dropout_p_output=dropout_p).to(device)
-
-    downsampler = Downsampler(2, factor, "lanczos3", phase=0.5, preserve_size=True).to(device)
+    net.apply(init_normal)
 
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
@@ -1815,8 +2059,6 @@ def run_sr_mcd(
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
 
-    # mask = mask.to(device)
-
     pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
     for i in pbar:
         optimizer.zero_grad()
@@ -1827,11 +2069,12 @@ def run_sr_mcd(
         out_hr = net(net_input)
         out_lr = downsampler(out_hr)
 
-        loss = gaussian_nll(out_lr[:, :1], out_lr[:, 1:], img_lr_torch)
+        loss = gaussian_nll(out_lr[:, :1], out_lr[:, 1:], img_small_torch)
         loss.backward()
         optimizer.step()
 
-        out_hr[:, 1:] = torch.exp(-out_hr[:, 1:])  # aleatoric uncertainty
+        with torch.no_grad():
+            out_hr[:, 1:] = torch.exp(-out_hr[:, 1:])  # aleatoric uncertainty
 
         # Smoothing
         if out_avg is None:
@@ -1840,7 +2083,7 @@ def run_sr_mcd(
             out_avg = out_avg * exp_weight + out_hr.detach() * (1 - exp_weight)
 
         with torch.no_grad():
-            mse_corrupted[i] = mse(downsampler(out_avg)[:, :1], img_lr_torch).item()
+            mse_corrupted[i] = mse(downsampler(out_avg)[:, :1], img_small_torch).item()
             mse_gt[i] = mse(out_avg[:, :1], img_torch).item()
 
             _out = out_hr.detach()[:, :1].clip(0, 1)
@@ -1851,10 +2094,10 @@ def run_sr_mcd(
             mc_ring_buffer_epi[i % mc_iter] = _out[0]
             mc_ring_buffer_ale[i % mc_iter] = _out_ale[0]
 
-            psnr_lr = peak_signal_noise_ratio(img_lr_torch, _out_lr)
+            psnr_lr = peak_signal_noise_ratio(img_small_torch, _out_lr)
             psnr_gt = peak_signal_noise_ratio(img_torch, _out)
             psnr_gt_sm = peak_signal_noise_ratio(img_torch, _out_avg)
-            ssim_lr = structural_similarity(img_lr_torch, _out_lr)
+            ssim_lr = structural_similarity(img_small_torch, _out_lr)
             ssim_gt = structural_similarity(img_torch, _out)
             ssim_gt_sm = structural_similarity(img_torch, _out_avg)
 
@@ -1872,6 +2115,9 @@ def run_sr_mcd(
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mcd.png', "MSE MC Dropout")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['mcd'] = mse_corrupted
     MSE_GT['mcd'] = mse_gt
@@ -1892,8 +2138,8 @@ def run_sr_mcd(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 lr_img=img_lr_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 lr_img=img_small_torch.cpu().numpy().squeeze(), mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -1933,38 +2179,20 @@ def run_sr_sgld(
 
     torch.backends.cudnn.benchmark = True
 
-    imsize = (256, 256)
-
     if img == 0:
         fname = 'data/super-resolution/img_139_res384.png'
-        # imsize = (256, 256)
-    elif img == 1:
-        fname = 'data/super-resolution/img_203_res.png'
-        # imsize = (256, 256)
+        imsize = (384, 384)
+        imchannels = 1
     else:
         assert False
 
-    if fname in ['data/super-resolution/img_139_res384.png', 'data/super-resolution/img_203_res.png']:
-
-        imgs = load_LR_HR_imgs_sr(fname, -1, factor, enforse_div32="CROP")
-
-        img_hr_np = imgs["HR_np"]
-        img_lr_np = imgs["LR_np"]
-        img_pil = imgs["HR_pil"]
-
-        imsize = img_hr_np.shape[1:]
-
+    if fname in ['data/super-resolution/img_139_res384.png']:
+        img_pil = crop_image(get_image(fname, imsize)[0], d=32)
+        img_np = pil_to_np(img_pil)
     else:
         assert False
-
-    if plot:
-        _img_lr_np = cv2.resize(img_lr_np[0], img_hr_np.shape[2:0:-1], interpolation=cv2.INTER_NEAREST)[np.newaxis]
-        q = plot_image_grid([img_hr_np, _img_lr_np], 4, 6)
-        out_pil = np_to_pil(q)
-        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     INPUT = 'noise'
-    # pad = 'reflection'
     OPT_OVER = 'net'  # 'net,input'
 
     reg_noise_std = 1. / 10.
@@ -1976,8 +2204,21 @@ def run_sr_sgld(
 
     mse = torch.nn.MSELoss()
 
-    img_torch = np_to_torch(img_hr_np).to(device)
-    img_lr_torch = np_to_torch(img_lr_np).to(device)
+    downsampler = lambda x: torch.nn.functional.interpolate(
+        x,
+        scale_factor=1/factor,
+        mode='nearest',
+        recompute_scale_factor=False)
+
+    img_torch = np_to_torch(img_np).to(device)
+    img_small_torch = downsampler(img_torch).detach()
+
+    if plot:
+        _img_lr_np = cv2.resize(img_small_torch[0,0].cpu().numpy(),
+                                img_np.shape[2:0:-1], interpolation=cv2.INTER_NEAREST)[np.newaxis]
+        q = plot_image_grid([img_np, _img_lr_np], 4, 6)
+        out_pil = np_to_pil(q)
+        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
@@ -2001,10 +2242,10 @@ def run_sr_sgld(
 
     NET_TYPE = 'skip'
 
-    skip_n33d = 64 # 128
-    skip_n33u = 64 # 128
+    skip_n33d = [16, 32, 64, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128]
     skip_n11 = 4
-    num_scales = 3 # 5
+    num_scales = 5
     upsample_mode = 'bilinear'
     pad = 'reflection'
 
@@ -2015,8 +2256,6 @@ def run_sr_sgld(
                   num_scales=num_scales,
                   n_channels=2,
                   upsample_mode=upsample_mode).to(device)
-
-    downsampler = Downsampler(2, factor, "lanczos3", phase=0.5, preserve_size=True).to(device)
 
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
@@ -2046,14 +2285,15 @@ def run_sr_sgld(
         out_hr = net(net_input)
         out_lr = downsampler(out_hr)
 
-        loss = mse(out_lr[:,:1], img_lr_torch)
+        loss = gaussian_nll(out_lr[:, :1], out_lr[:, 1:], img_small_torch)
         loss.backward()
         optimizer.step()
 
         if scheduler.get_last_lr()[0] > 1e-8:
             scheduler.step()
 
-        out_hr[:, 1:] = torch.exp(-out_hr[:, 1:])  # aleatoric uncertainty
+        with torch.no_grad():
+            out_hr[:, 1:] = torch.exp(-out_hr[:, 1:])  # aleatoric uncertainty
 
         # Smoothing
         if out_avg is None:
@@ -2062,7 +2302,7 @@ def run_sr_sgld(
             out_avg = out_avg * exp_weight + out_hr.detach() * (1 - exp_weight)
 
         with torch.no_grad():
-            mse_corrupted[i] = mse(downsampler(out_avg)[:, :1], img_lr_torch).item()
+            mse_corrupted[i] = mse(downsampler(out_avg)[:, :1], img_small_torch).item()
             mse_gt[i] = mse(out_avg[:, :1], img_torch).item()
 
             _out = out_hr.detach()[:, :1].clip(0, 1)
@@ -2073,10 +2313,10 @@ def run_sr_sgld(
             mc_ring_buffer_epi[i % mc_iter] = _out[0]
             mc_ring_buffer_ale[i % mc_iter] = _out_ale[0]
 
-            psnr_lr = peak_signal_noise_ratio(img_lr_torch, _out_lr)
+            psnr_lr = peak_signal_noise_ratio(img_small_torch, _out_lr)
             psnr_gt = peak_signal_noise_ratio(img_torch, _out)
             psnr_gt_sm = peak_signal_noise_ratio(img_torch, _out_avg)
-            ssim_lr = structural_similarity(img_lr_torch, _out_lr)
+            ssim_lr = structural_similarity(img_small_torch, _out_lr)
             ssim_gt = structural_similarity(img_torch, _out)
             ssim_gt_sm = structural_similarity(img_torch, _out_avg)
 
@@ -2094,6 +2334,9 @@ def run_sr_sgld(
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_sgld.png', "MSE SGLD")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['sgld'] = mse_corrupted
     MSE_GT['sgld'] = mse_gt
@@ -2101,8 +2344,6 @@ def run_sr_sgld(
     UNCERTS_ALE['sgld'] = uncerts_ale
     PSNRS['sgld'] = psnrs
     SSIMS['sgld'] = ssims
-
-    ## END
 
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
@@ -2114,22 +2355,20 @@ def run_sr_sgld(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 lr_img=img_lr_np, mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 lr_img=img_small_torch.cpu().numpy().squeeze(), mse_noisy=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
     return PSNRS['sgld'][-1, 2]
 
 
-def run_inp_mfvi(
+def run_inp_dip(
         img: int = 0,
         imsize: Tuple[int] = (256, 256),
         num_iter: int = 5000,
-        lr: float = 3e-4,
-        temp: float = 4e-6,  # lambda in the paper
-        sigma: float = 0.01,
-        input_depth: int = 16,
+        lr: float = 2e-3,
+        input_depth: int = 32,
         downsampler: nn.Module = None,
         mask: torch.Tensor = torch.tensor([1]),
         device: torch.device = torch.device('cpu'),
@@ -2151,27 +2390,9 @@ def run_inp_mfvi(
 
     np.random.seed(seed)
     torch.manual_seed(seed)
-
     torch.backends.cudnn.benchmark = True
 
-    if img == 0:
-        fname = 'data/inpainting/hair_0_res.png'
-        mask_fname = 'data/inpainting/hair_0_res_mask.png'
-        # imsize = (256, 256)
-    elif img == 1:
-        fname = 'data/inpainting/hair_1_res.png'
-        mask_fname = 'data/inpainting/hair_1_res_mask.png'
-        # imsize = (256, 256)
-    else:
-        assert False
-
-    if fname in ['data/inpainting/hair_0_res.png', 'data/inpainting/hair_1_res.png']:
-        img_pil, img_np = get_image(fname, -1)
-        img_mask_pil, img_mask_np = get_image(mask_fname, -1)
-
-        imsize = img_np.shape[1:]
-    else:
-        assert False
+    img_np, img_mask_np, imsize = get_img_inpainting(img)
 
     if plot:
         q = plot_image_grid([img_np, img_np * img_mask_np], 4, 6)
@@ -2179,7 +2400,6 @@ def run_inp_mfvi(
         out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     INPUT = 'noise'
-    # pad = 'reflection'
     OPT_OVER = 'net'  # 'net,input'
 
     reg_noise_std = 1. / 10.
@@ -2196,6 +2416,7 @@ def run_inp_mfvi(
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
+    RECONS = {}
     UNCERTS_EPI = {}
     UNCERTS_ALE = {}
     PSNRS = {}
@@ -2203,10 +2424,9 @@ def run_inp_mfvi(
 
     figsize = 4
 
-    ## MFVI
     weight_decay = 0
 
-    net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
+    net_input = get_noise(input_depth, INPUT, (imsize[0], imsize[1])).to(device).detach()
 
     net_input_saved = net_input.detach().clone()
     noise = net_input.detach().clone()
@@ -2219,33 +2439,247 @@ def run_inp_mfvi(
 
     NET_TYPE = 'skip'
 
-    skip_n33d = [16, 32, 64, 128, 128]
-    skip_n33u = [16, 32, 64, 128, 128]
-    skip_n11 = 0
-    num_scales = 5
-    upsample_mode = 'bilinear'
+    skip_n33d = [16, 32, 64, 128, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128, 128]
+    num_scales = len(skip_n33d)
+    skip_n11 = [0] * num_scales
+    filter_size_down = 5
+    filter_size_up = 3
+    filter_size_skip = 1
+    need1x1_up = False
+    upsample_mode = 'nearest'
     pad = 'reflection'
 
-    net = get_net(input_depth, NET_TYPE, pad,
-                  skip_n33d=skip_n33d,
-                  skip_n33u=skip_n33u,
-                  skip_n11=skip_n11,
-                  num_scales=num_scales,
-                  n_channels=4,
-                  upsample_mode=upsample_mode).to(device)
+    net = skip(
+        input_depth,
+        num_output_channels=4,
+        pad=pad,
+        num_channels_down=skip_n33d,
+        num_channels_up=skip_n33u,
+        num_channels_skip=skip_n11,
+        filter_size_down=filter_size_down,
+        filter_size_up=filter_size_up,
+        filter_skip_size=filter_size_skip,
+        need1x1_up=need1x1_up,
+        upsample_mode=upsample_mode,
+        dropout_mode_down='None',
+        dropout_mode_up='None',
+        dropout_mode_skip='None',
+        dropout_mode_output='None',
+        need_sigmoid=False
+    ).to(device)
+
+    mse_corrupted = np.zeros((num_iter))
+    mse_gt = np.zeros((num_iter))
+    recons = np.zeros((num_iter // show_every + 1, 3) + imsize)
+    psnrs = np.zeros((num_iter, 3))
+    ssims = np.zeros((num_iter, 3))
+
+    img_mean = 0
+    sample_count = 0
+    psnr_corrupted_last = 0
+
+    parameters = get_params(OPT_OVER, net, net_input)
+    optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
+
+    mask_torch = mask_torch.to(device).round_()
+
+    pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
+    for i in pbar:
+        optimizer.zero_grad()
+
+        if reg_noise_std > 0:
+            net_input = net_input_saved + (noise.normal_() * reg_noise_std)
+
+        out = net(net_input)
+        out_pred = out[:, :3].sigmoid()  # have to do it this way to prevent inplace modification error!?
+
+        loss = torch.nn.functional.mse_loss(out_pred*mask_torch, img_torch*mask_torch)
+        loss.backward()
+        optimizer.step()
+
+        out[:, :3] = out_pred
+
+        # Smoothing
+        if out_avg is None:
+            out_avg = out.detach()
+        else:
+            out_avg = out_avg * exp_weight + out.detach() * (1 - exp_weight)
+
+        with torch.no_grad():
+            mse_corrupted[i] = mse(out_avg[:, :3], img_torch).item()
+            mse_gt[i] = mse(out_avg[:, :3], img_torch).item()
+
+            _out = out.detach()[:, :3].clip(0, 1)
+            _out = out.detach()[:, :3].clip(0, 1)
+            _out_avg = out_avg.detach()[:, :3].clip(0, 1)
+
+            psnr_corrupted = peak_signal_noise_ratio(img_torch, _out)
+            psnr_gt = peak_signal_noise_ratio(img_torch * mask_torch, _out * mask_torch)
+            psnr_gt_sm = peak_signal_noise_ratio(img_torch * mask_torch, _out_avg * mask_torch)
+            ssim_corrupted = structural_similarity(img_torch, _out)
+            ssim_gt = structural_similarity(img_torch * mask_torch, _out * mask_torch)
+            ssim_gt_sm = structural_similarity(img_torch * mask_torch, _out_avg * mask_torch)
+
+        psnrs[i] = [psnr_corrupted, psnr_gt, psnr_gt_sm]
+        ssims[i] = [ssim_corrupted, ssim_gt, ssim_gt_sm]
+
+        if i % show_every == 0:
+            pbar.set_description(f'MSE: {mse_corrupted[i].item():.4f} | PSNR_corrupted: {psnr_corrupted:7.4f} \
+| PSRN_gt: {psnr_gt:7.4f} PSNR_gt_sm: {psnr_gt_sm:7.4f}')
+
+            _out_var = torch.var(mc_ring_buffer_epi, dim=0)
+            _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
+
+            if plot:
+                plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_dip.png', "MSE DIP")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+
+    MSE_CORRUPTED['dip'] = mse_corrupted
+    MSE_GT['dip'] = mse_gt
+    RECONS['dip'] = recons
+    PSNRS['dip'] = psnrs
+    SSIMS['dip'] = ssims
+
+    file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
+
+    if plot:
+        plot_results(MSE_CORRUPTED, MSE_GT, PSNRS, SSIMS, save_path, timestamp, file)
+
+    file.close()
+
+    # save stuff for plotting
+    if save:
+        np.savez(f"{save_path}/{timestamp}/save.npz",
+                 img_inpainting=img_np, img_mask=img_mask_np, mse_corrupted=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 recons=RECONS, uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
+
+    plt.close('all')
+
+    return PSNRS['dip'][-1, 2]
+
+
+def run_inp_mfvi(
+        img: int = 0,
+        imsize: Tuple[int] = (256, 256),
+        num_iter: int = 5000,
+        lr: float = 2e-3,
+        temp: float = 4e-6,
+        sigma: float = 0.01,
+        input_depth: int = 32,
+        downsampler: nn.Module = None,
+        mask: torch.Tensor = torch.tensor([1]),
+        device: torch.device = torch.device('cpu'),
+        index: int = 0,
+        seed: int = 42,
+        show_every: int = 100,
+        plot: bool = True,
+        save: bool = True,
+        save_path: str = '../logs',
+        *args,
+        **kwargs
+) -> float:
+    timestamp = str(time.time())
+    Path(f'{save_path}/{timestamp}').mkdir(parents=True, exist_ok=False)
+
+    with open(f'{save_path}/{timestamp}/locals.txt', 'w') as f:
+        for key, val in locals().items():
+            print(key, '=', val, file=f)
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.benchmark = True
+
+    img_np, img_mask_np, imsize = get_img_inpainting(img)
+
+    if plot:
+        q = plot_image_grid([img_np, img_np * img_mask_np], 4, 6)
+        out_pil = np_to_pil(q)
+        out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
+
+    INPUT = 'noise'
+    OPT_OVER = 'net'  # 'net,input'
+
+    reg_noise_std = 1. / 10.
+    LR = lr
+
+    num_iter += 1
+
+    exp_weight = 0.99
+
+    mse = torch.nn.MSELoss()
+
+    img_torch = np_to_torch(img_np).to(device)
+    mask_torch = np_to_torch(img_mask_np)
+
+    MSE_CORRUPTED = {}
+    MSE_GT = {}
+    RECONS = {}
+    UNCERTS_EPI = {}
+    UNCERTS_ALE = {}
+    PSNRS = {}
+    SSIMS = {}
+
+    figsize = 4
+
+    weight_decay = 0
+
+    net_input = get_noise(input_depth, INPUT, (imsize[0], imsize[1])).to(device).detach()
+
+    net_input_saved = net_input.detach().clone()
+    noise = net_input.detach().clone()
+
+    out_avg = None
+
+    mc_iter = 25
+    mc_ring_buffer_epi = torch.zeros((mc_iter, 3) + imsize)  # saves the last mc_iter reconstructions
+    mc_ring_buffer_ale = torch.zeros((mc_iter, 3) + imsize)  # saves the last mc_iter reconstructions
+
+    NET_TYPE = 'skip'
+
+    skip_n33d = [16, 32, 64, 128, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128, 128]
+    num_scales = len(skip_n33d)
+    skip_n11 = [0] * num_scales
+    filter_size_down = 5
+    filter_size_up = 3
+    filter_size_skip = 1
+    need1x1_up = False
+    upsample_mode = 'nearest'
+    pad = 'reflection'
+
+    net = skip(
+        input_depth,
+        num_output_channels=4,
+        pad=pad,
+        num_channels_down=skip_n33d,
+        num_channels_up=skip_n33u,
+        num_channels_skip=skip_n11,
+        filter_size_down=filter_size_down,
+        filter_size_up=filter_size_up,
+        filter_skip_size=filter_size_skip,
+        need1x1_up=need1x1_up,
+        upsample_mode=upsample_mode,
+        dropout_mode_down='None',
+        dropout_mode_up='None',
+        dropout_mode_skip='None',
+        dropout_mode_output='None',
+        need_sigmoid=False
+    ).to(device)
 
     prior = {'mu': 0.0,
-             'sigma': sigma}
+             'sigma': np.sqrt(temp)*sigma}
 
     net = MeanFieldVI(net,
                       prior=prior,
-                      # beta=beta,
                       replace_layers='all',
                       device=device,
                       reparam='')
 
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
+    recons = np.zeros((num_iter // show_every + 1, 3) + imsize)
     uncerts_epi = np.zeros((num_iter // show_every + 1, 3) + imsize)
     uncerts_ale = np.zeros((num_iter // show_every + 1, 3) + imsize)
     psnrs = np.zeros((num_iter, 3))
@@ -2258,7 +2692,7 @@ def run_inp_mfvi(
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
 
-    mask_torch = mask_torch.to(device)
+    mask_torch = mask_torch.to(device).round_()
 
     pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
     for i in pbar:
@@ -2268,14 +2702,18 @@ def run_inp_mfvi(
             net_input = net_input_saved + (noise.normal_() * reg_noise_std)
 
         out = net(net_input)
+        out_pred = out[:, :3].sigmoid()  # have to do it this way to prevent inplace modification error!?
 
-        nll = gaussian_nll(out[:, :3] * mask_torch, out[:, 3:] * mask_torch, img_torch * mask_torch)
+        nll = gaussian_nll_inpainting(out_pred, out[:, 3:], img_torch, mask_torch)
         kl = net.kl()
         loss = nll + temp * kl
         loss.backward()
         optimizer.step()
 
-        out[:, 3:] = torch.exp(-out[:, 3:])  # aleatoric uncertainty
+        out[:, :3] = out_pred
+
+        with torch.no_grad():
+            out[:, 3:] = torch.exp(-out[:, 3:])  # aleatoric uncertainty
 
         # Smoothing
         if out_avg is None:
@@ -2313,18 +2751,21 @@ def run_inp_mfvi(
             _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
             uncerts_epi[i // show_every] = _out_var.cpu().numpy()
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mfvi.png', "MSE MFVI")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['mfvi'] = mse_corrupted
     MSE_GT['mfvi'] = mse_gt
+    RECONS['mfvi'] = recons
     UNCERTS_EPI['mfvi'] = uncerts_epi
     UNCERTS_ALE['mfvi'] = uncerts_ale
     PSNRS['mfvi'] = psnrs
     SSIMS['mfvi'] = ssims
-
-    ## END
 
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
@@ -2336,8 +2777,8 @@ def run_inp_mfvi(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 inpainting_img=img_np*img_mask_np, mse_corrupted=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 img_inpainting=img_np, img_mask=img_mask_np, mse_corrupted=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 recons=RECONS, uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -2376,24 +2817,7 @@ def run_inp_mcd(
 
     torch.backends.cudnn.benchmark = True
 
-    if img == 0:
-        fname = 'data/inpainting/hair_0_res.png'
-        mask_fname = 'data/inpainting/hair_0_res_mask.png'
-        # imsize = (256, 256)
-    elif img == 1:
-        fname = 'data/inpainting/hair_1_res.png'
-        mask_fname = 'data/inpainting/hair_1_res_mask.png'
-        # imsize = (256, 256)
-    else:
-        assert False
-
-    if fname in ['data/inpainting/hair_0_res.png', 'data/inpainting/hair_1_res.png']:
-        img_pil, img_np = get_image(fname, -1)
-        img_mask_pil, img_mask_np = get_image(mask_fname, -1)
-
-        imsize = img_np.shape[1:]
-    else:
-        assert False
+    img_np, img_mask_np, imsize = get_img_inpainting(img)
 
     if plot:
         q = plot_image_grid([img_np, img_np * img_mask_np], 4, 6)
@@ -2401,7 +2825,6 @@ def run_inp_mcd(
         out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     INPUT = 'noise'
-    # pad = 'reflection'
     OPT_OVER = 'net'  # 'net,input'
 
     reg_noise_std = 1. / 10.
@@ -2418,6 +2841,7 @@ def run_inp_mcd(
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
+    RECONS = {}
     UNCERTS_EPI = {}
     UNCERTS_ALE = {}
     PSNRS = {}
@@ -2425,7 +2849,7 @@ def run_inp_mcd(
 
     figsize = 4
 
-    net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
+    net_input = get_noise(input_depth, INPUT, (imsize[0], imsize[1])).to(device).detach()
 
     net_input_saved = net_input.detach().clone()
     noise = net_input.detach().clone()
@@ -2436,6 +2860,8 @@ def run_inp_mcd(
     mc_ring_buffer_epi = torch.zeros((mc_iter, 3) + imsize)  # saves the last mc_iter reconstructions
     mc_ring_buffer_ale = torch.zeros((mc_iter, 3) + imsize)  # saves the last mc_iter reconstructions
 
+    # for some reason, the network used in mfvi and sgld performs considerably worse for mcd
+    # we therefore use the same architecture as for denoising, which is much better
     NET_TYPE = 'skip'
 
     skip_n33d = [16, 32, 64, 128, 128]
@@ -2468,6 +2894,7 @@ def run_inp_mcd(
 
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
+    recons = np.zeros((num_iter // show_every + 1, 3) + imsize)
     uncerts_epi = np.zeros((num_iter // show_every + 1, 3) + imsize)
     uncerts_ale = np.zeros((num_iter // show_every + 1, 3) + imsize)
     psnrs = np.zeros((num_iter, 3))
@@ -2480,7 +2907,7 @@ def run_inp_mcd(
     parameters = get_params(OPT_OVER, net, net_input)
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
 
-    mask_torch = mask_torch.to(device)
+    mask_torch = mask_torch.to(device).round_()
 
     pbar = tqdm(range(num_iter), miniters=num_iter // show_every, position=index)
     for i in pbar:
@@ -2490,12 +2917,14 @@ def run_inp_mcd(
             net_input = net_input_saved + (noise.normal_() * reg_noise_std)
 
         out = net(net_input)
+        out[:, :3].sigmoid_()
 
-        loss = gaussian_nll(out[:, :3] * mask_torch, out[:, 3:] * mask_torch, img_torch * mask_torch)
+        loss = gaussian_nll_inpainting(out[:, :3], out[:, 3:], img_torch, mask_torch)
         loss.backward()
         optimizer.step()
 
-        out[:, 3:] = torch.exp(-out[:, 3:])  # aleatoric uncertainty
+        with torch.no_grad():
+            out[:, 3:] = torch.exp(-out[:, 3:])  # aleatoric uncertainty
 
         # Smoothing
         if out_avg is None:
@@ -2533,18 +2962,21 @@ def run_inp_mcd(
             _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
             uncerts_epi[i // show_every] = _out_var.cpu().numpy()
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_mcd.png', "MSE MC Dropout")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['mcd'] = mse_corrupted
     MSE_GT['mcd'] = mse_gt
+    RECONS['mcd'] = recons
     UNCERTS_EPI['mcd'] = uncerts_epi
     UNCERTS_ALE['mcd'] = uncerts_ale
     PSNRS['mcd'] = psnrs
     SSIMS['mcd'] = ssims
-
-    ## END
 
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
@@ -2556,8 +2988,8 @@ def run_inp_mcd(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 inpainting_img=img_np*img_mask_np, mse_corrupted=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 img_inpainting=img_np, img_mask=img_mask_np, mse_corrupted=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 recons=RECONS, uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -2596,24 +3028,7 @@ def run_inp_sgld(
 
     torch.backends.cudnn.benchmark = True
 
-    if img == 0:
-        fname = 'data/inpainting/hair_0_res.png'
-        mask_fname = 'data/inpainting/hair_0_res_mask.png'
-        # imsize = (256, 256)
-    elif img == 1:
-        fname = 'data/inpainting/hair_1_res.png'
-        mask_fname = 'data/inpainting/hair_1_res_mask.png'
-        # imsize = (256, 256)
-    else:
-        assert False
-
-    if fname in ['data/inpainting/hair_0_res.png', 'data/inpainting/hair_1_res.png']:
-        img_pil, img_np = get_image(fname, -1)
-        img_mask_pil, img_mask_np = get_image(mask_fname, -1)
-
-        imsize = img_np.shape[1:]
-    else:
-        assert False
+    img_np, img_mask_np, imsize = get_img_inpainting(img)
 
     if plot:
         q = plot_image_grid([img_np, img_np * img_mask_np], 4, 6)
@@ -2621,7 +3036,6 @@ def run_inp_sgld(
         out_pil.save(f'{save_path}/{timestamp}/input.png', 'PNG')
 
     INPUT = 'noise'
-    # pad = 'reflection'
     OPT_OVER = 'net'  # 'net,input'
 
     reg_noise_std = 1. / 10.
@@ -2638,6 +3052,7 @@ def run_inp_sgld(
 
     MSE_CORRUPTED = {}
     MSE_GT = {}
+    RECONS = {}
     UNCERTS_EPI = {}
     UNCERTS_ALE = {}
     PSNRS = {}
@@ -2645,10 +3060,7 @@ def run_inp_sgld(
 
     figsize = 4
 
-    ## MFVI
-    # weight_decay = 0
-
-    net_input = get_noise(input_depth, INPUT, (img_pil.size[1], img_pil.size[0])).to(device).detach()
+    net_input = get_noise(input_depth, INPUT, (imsize[0], imsize[1])).to(device).detach()
 
     net_input_saved = net_input.detach().clone()
     noise = net_input.detach().clone()
@@ -2661,23 +3073,39 @@ def run_inp_sgld(
 
     NET_TYPE = 'skip'
 
-    skip_n33d = [16, 32, 64, 128, 128]
-    skip_n33u = [16, 32, 64, 128, 128]
-    skip_n11 = 0
-    num_scales = 5
-    upsample_mode = 'bilinear'
+    skip_n33d = [16, 32, 64, 128, 128, 128]
+    skip_n33u = [16, 32, 64, 128, 128, 128]
+    num_scales = len(skip_n33d)
+    skip_n11 = [0] * num_scales
+    filter_size_down = 5
+    filter_size_up = 3
+    filter_size_skip = 1
+    need1x1_up = False
+    upsample_mode = 'nearest'
     pad = 'reflection'
 
-    net = get_net(input_depth, NET_TYPE, pad,
-                  skip_n33d=skip_n33d,
-                  skip_n33u=skip_n33u,
-                  skip_n11=skip_n11,
-                  num_scales=num_scales,
-                  n_channels=4,
-                  upsample_mode=upsample_mode).to(device)
+    net = skip(
+        input_depth,
+        num_output_channels=4,
+        pad=pad,
+        num_channels_down=skip_n33d,
+        num_channels_up=skip_n33u,
+        num_channels_skip=skip_n11,
+        filter_size_down=filter_size_down,
+        filter_size_up=filter_size_up,
+        filter_skip_size=filter_size_skip,
+        need1x1_up=need1x1_up,
+        upsample_mode=upsample_mode,
+        dropout_mode_down='None',
+        dropout_mode_up='None',
+        dropout_mode_skip='None',
+        dropout_mode_output='None',
+        need_sigmoid=False
+    ).to(device)
 
     mse_corrupted = np.zeros((num_iter))
     mse_gt = np.zeros((num_iter))
+    recons = np.zeros((num_iter // show_every + 1, 3) + imsize)
     uncerts_epi = np.zeros((num_iter // show_every + 1, 3) + imsize)
     uncerts_ale = np.zeros((num_iter // show_every + 1, 3) + imsize)
     psnrs = np.zeros((num_iter, 3))
@@ -2691,7 +3119,7 @@ def run_inp_sgld(
     optimizer = torch.optim.AdamW(parameters, lr=LR, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
 
-    mask_torch = mask_torch.to(device)
+    mask_torch = mask_torch.to(device).round_()
 
     param_noise_sigma = 2
 
@@ -2704,15 +3132,17 @@ def run_inp_sgld(
             net_input = net_input_saved + (noise.normal_() * reg_noise_std)
 
         out = net(net_input)
+        out[:, :3].sigmoid_()
 
-        loss = mse(out[:, :3] * mask_torch, img_torch * mask_torch)
+        loss = gaussian_nll_inpainting(out[:, :3], out[:, 3:], img_torch, mask_torch)
         loss.backward()
         optimizer.step()
 
         if scheduler.get_last_lr()[0] > 1e-8:
             scheduler.step()
 
-        out[:, 3:] = torch.exp(-out[:, 3:])  # aleatoric uncertainty
+        with torch.no_grad():
+            out[:, 3:] = torch.exp(-out[:, 3:])  # aleatoric uncertainty
 
         # Smoothing
         if out_avg is None:
@@ -2750,18 +3180,21 @@ def run_inp_sgld(
             _out_ale = torch.mean(mc_ring_buffer_ale, dim=0)
             uncerts_epi[i // show_every] = _out_var.cpu().numpy()
             uncerts_ale[i // show_every] = _out_ale.cpu().numpy()
+            recons[i // show_every] = _out_avg.cpu().numpy()[0]
 
             if plot:
                 plot_loss(mse_corrupted, mse_gt, psnrs, i, f'{save_path}/{timestamp}/loss_sgld.png', "MSE SGLD")
+                np_to_pil(_out_avg[0].cpu().numpy()).save(f'{save_path}/{timestamp}/out_avg.png', 'PNG')
+                np_to_pil(uncerts_epi[i // show_every]/uncerts_epi[i // show_every].max()).save(f'{save_path}/{timestamp}/out_var.png', 'PNG')
+                np_to_pil(uncerts_ale[i // show_every]/uncerts_ale[i // show_every].max()).save(f'{save_path}/{timestamp}/out_ale.png', 'PNG')
 
     MSE_CORRUPTED['sgld'] = mse_corrupted
     MSE_GT['sgld'] = mse_gt
+    RECONS['sgld'] = recons
     UNCERTS_EPI['sgld'] = uncerts_epi
     UNCERTS_ALE['sgld'] = uncerts_ale
     PSNRS['sgld'] = psnrs
     SSIMS['sgld'] = ssims
-
-    ## END
 
     file = open(f'{save_path}/{timestamp}/locals.txt', 'a')
 
@@ -2773,8 +3206,8 @@ def run_inp_sgld(
     # save stuff for plotting
     if save:
         np.savez(f"{save_path}/{timestamp}/save.npz",
-                 inpainting_img=img_np*img_mask_np, mse_corrupted=MSE_CORRUPTED, mse_gt=MSE_GT,
-                 uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS)
+                 img_inpainting=img_np, img_mask=img_mask_np, mse_corrupted=MSE_CORRUPTED, mse_gt=MSE_GT,
+                 recons=RECONS, uncerts=UNCERTS_EPI, uncerts_ale=UNCERTS_ALE, psnrs=PSNRS, ssims=SSIMS)
 
     plt.close('all')
 
@@ -2800,7 +3233,7 @@ class ExactGPModel(gpytorch.models.ExactGP):
         return gpytorch.distributions.MultivariateNormal(mean_x, covar_x)
 
 
-def train_gp(X_train, Y_train, iter_max=1000):
+def train_gp(X_train, Y_train, iter_max=2000):
     # initialize likelihood and model
     likelihood = gpytorch.likelihoods.GaussianLikelihood(
         noise_prior=gpytorch.priors.GammaPrior(concentration=0.01, rate=100.0)
@@ -2953,6 +3386,7 @@ def f(task, bayes, idx, queue, candidate, device, params):
     if bayes == "mfvi": bo_candidates = {"temp": candidate[0], "sigma": candidate[1]}
     elif bayes == "mcd": bo_candidates = {"dropout_p": candidate[0], "weight_decay": candidate[1]}
     elif bayes == "sgld": bo_candidates = {"gamma": candidate[0], "weight_decay": candidate[1]}
+    elif bayes == "dip": bo_candidates = dict()
     else: assert False
     _run = globals()[f"run_{task}_{bayes}"]
 
@@ -2974,9 +3408,9 @@ def bo(
     del run_params['bo_results_path']
     Path(bo_out_path).mkdir(parents=True, exist_ok=True)
 
-    device = torch.device("cuda:0")
     device_list = [torch.device(d) for d in run_params['devices']]
     del run_params['devices']
+    device = device_list[0]
 
     X = []
     Y = []
