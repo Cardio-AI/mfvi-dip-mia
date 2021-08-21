@@ -2,15 +2,15 @@
   "bo_params": {
     "dropout_p": {
       "logbounds": [-4.0, -0.1],
-      "candidates": [0.02, 0.2]
+      "candidates": [0.25143340009920506]
     },
     "weight_decay": {
       "logbounds": [-10.0, 0.0],
-      "candidates": [1e-1, 1e-6]
+      "candidates": [1.495431935895334e-08]
     }
   },
   "run_params": {
-    "img": 0,
+    "img": 5,
     "num_iter": 50000,
     "lr": 1e-3,
     "seed": 1,
@@ -19,8 +19,8 @@
     "show_every": 100,
     "plot": true,
     "save": true,
-    "devices": ["cuda:0"],
-    "save_path": "/media/laves/bo_logs_mcd_den",
-    "bo_results_path": "/media/laves/bo_results_mcd_den"
+    "devices": ["cuda:2"],
+    "save_path": "/media/laves/test_logs_mcd_den_5",
+    "bo_results_path": "/media/laves/test_results_mcd_den_1"
   }
 }
