@@ -1,6 +1,6 @@
 # Posterior temperature optimized Bayesian models for inverse problems in medical imaging
 
-Max-Heinrich Lavesa*, Malte Tölleb*, Alexander Schlaefera, Sandy Engelhardt  
+Max-Heinrich Laves*, Malte Tölle*, Alexander Schlaefer, Sandy Engelhardt  
 (* contributed equally)
 
 Code for our MIDL 2021 Special Issue in MedIA journal submission on optimizing the temperature of Bayesian posteriors for inverse tasks in medical imaging.
