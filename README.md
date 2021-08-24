@@ -4,7 +4,7 @@ Max-Heinrich Laves*, Malte Tölle*, Alexander Schlaefer, Sandy Engelhardt
 (* contributed equally)
 
 Code for our MIDL 2021 Special Issue in MedIA journal submission on optimizing the temperature of Bayesian posteriors for inverse tasks in medical imaging.
-This submission considerably extends a preliminary version of this work presented at the "Fourth Conference on MedicalImaging with Deep Learning" (Tölle et al., 2021).
+This submission considerably extends a preliminary version of this work presented at the "Fourth Conference on Medical Imaging with Deep Learning" (Tölle et al., 2021).
 
 ## Abstract
 
